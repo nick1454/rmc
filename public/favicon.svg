@@ -1,0 +1,54 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <linearGradient id="rmcGrad" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#F59E0B" />
+            <stop offset="50%" stop-color="#EA580C" />
+            <stop offset="100%" stop-color="#B45309" />
+        </linearGradient>
+        <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-color="#78350F" flood-opacity="0.5" />
+        </filter>
+    </defs>
+
+    <!-- Rounded Badge Container -->
+    <rect width="64" height="64" rx="15" fill="url(#rmcGrad)" />
+    <rect x="1.5" y="1.5" width="61" height="61" rx="13.5" stroke="#FDE68A" stroke-opacity="0.3" stroke-width="1.5" />
+
+    <!-- Outer Hexagonal Structural Framework -->
+    <polygon
+        points="32,9 52,20.5 52,43.5 32,55 12,43.5 12,20.5"
+        stroke="#FFFFFF"
+        stroke-width="2.5"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        stroke-opacity="0.45"
+        fill="none"
+    />
+
+    <!-- Transit Mixer Drum & Concrete Flow -->
+    <g filter="url(#glow)">
+        <path
+            d="M22 22C24.5 18 39.5 18 42 22C44.5 26 43 38 39 41.5C35 45 27 45 23 41.5C19 38 19.5 26 22 22Z"
+            fill="#FFFFFF"
+            fill-opacity="0.25"
+            stroke="#FFFFFF"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        />
+        <!-- Center Cross Blades -->
+        <path
+            d="M26 26L38 38M38 26L26 38"
+            stroke="#FFFFFF"
+            stroke-width="3"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        />
+    </g>
+
+    <!-- Batch Accent Indicator Nodes -->
+    <circle cx="32" cy="14" r="2.5" fill="#FEF08A" />
+    <circle cx="47" cy="32" r="2.5" fill="#FEF08A" />
+    <circle cx="17" cy="32" r="2.5" fill="#FEF08A" />
+    <circle cx="32" cy="50" r="2.5" fill="#FEF08A" />
+</svg>
