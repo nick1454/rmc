@@ -26,8 +26,11 @@ export interface Item {
     type: ItemType | string;
     hsn?: string | null;
     gst_per: number;
+    batch_no?: string;
     available_primary?: number;
     available_secondary?: number;
+    is_stock_exempt?: boolean;
+    in_stock?: boolean;
     batches?: ItemBatchStock[];
     created_by?: number | null;
     deleted_by?: number | null;

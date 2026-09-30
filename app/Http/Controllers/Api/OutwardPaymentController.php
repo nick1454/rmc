@@ -27,6 +27,7 @@ class OutwardPaymentController extends Controller
             'items.commissionAgent:id,name,code',
             'creator:id,name',
             'updater:id,name',
+            'lockedBy:id,name',
         ])->withCount('items');
 
         // Search filter
@@ -460,6 +461,7 @@ class OutwardPaymentController extends Controller
             'items.commissionAgent:id,name,code',
             'creator:id,name',
             'updater:id,name',
+            'lockedBy:id,name',
         ])->findOrFail($id);
 
         return response()->json([
@@ -474,6 +476,13 @@ class OutwardPaymentController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $payment = OutwardPayment::findOrFail($id);
+
+        if ($payment->is_locked) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This customer receipt voucher is locked and cannot be modified. Please unlock it first.',
+            ], 422);
+        }
 
         $validated = $request->validate([
             'payment_no' => ['required', 'string', 'max:50', Rule::unique('outward_payments', 'payment_no')->ignore($id)->whereNull('deleted_at')],
@@ -597,6 +606,7 @@ class OutwardPaymentController extends Controller
             'items.commissionAgent',
             'creator',
             'updater',
+            'lockedBy',
         ]);
 
         return response()->json([
@@ -613,6 +623,13 @@ class OutwardPaymentController extends Controller
     {
         $payment = OutwardPayment::findOrFail($id);
 
+        if ($payment->is_locked) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This customer receipt voucher is locked and cannot be deleted. Please unlock it first.',
+            ], 422);
+        }
+
         DB::transaction(function () use ($payment) {
             $affectedOutwardIds = $payment->items()->pluck('stock_outward_id')->toArray();
 
@@ -628,6 +645,41 @@ class OutwardPaymentController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Outward payment receipt voucher deleted successfully.',
+        ]);
+    }
+
+    /**
+     * Toggle lock status for an outward payment receipt voucher.
+     */
+    public function toggleLock(int $id): JsonResponse
+    {
+        $payment = OutwardPayment::findOrFail($id);
+
+        $isCurrentlyLocked = (bool) $payment->is_locked;
+        $newLockedState = ! $isCurrentlyLocked;
+
+        $payment->update([
+            'is_locked' => $newLockedState,
+            'locked_at' => $newLockedState ? Carbon::now() : null,
+            'locked_by' => $newLockedState ? auth()->id() : null,
+        ]);
+
+        $payment->load([
+            'party:id,name,code,phone,gstin,city',
+            'commissionAgent:id,name,code,phone',
+            'items.outward:id,entry_no,challan_no,invoice_date,total_amount,paid_amount,payment_status,destination',
+            'items.commissionAgent:id,name,code',
+            'creator:id,name',
+            'updater:id,name',
+            'lockedBy:id,name',
+        ]);
+
+        $statusText = $newLockedState ? 'locked' : 'unlocked';
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "Customer receipt voucher {$statusText} successfully.",
+            'data' => $payment,
         ]);
     }
 }

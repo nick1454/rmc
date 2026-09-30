@@ -29,7 +29,9 @@ import {
     Receipt,
     Wallet,
     Check,
-    ArrowRight
+    ArrowRight,
+    Lock,
+    Unlock
 } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -368,6 +370,10 @@ const handleDelete = async () => {
     }
 };
 
+const handleToggleLock = async (pay: PurchasePayment) => {
+    await paymentStore.toggleLock(pay.id);
+};
+
 const submitForm = async () => {
     // Filter out items with 0 paid amount
     const activeItems = form.value.items.filter((it) => Number(it.paid_amount) > 0);
@@ -582,6 +588,9 @@ defineExpose({
                                 <span class="font-mono font-bold text-slate-900 text-xs">
                                     {{ pay.payment_no }}
                                 </span>
+                                <span v-if="pay.is_locked" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 font-semibold text-[10px]" title="Voucher Locked">
+                                    <Lock class="w-3 h-3" /> Locked
+                                </span>
                                 <span class="text-[11px] font-mono text-slate-500">{{ pay.payment_date }}</span>
                             </div>
                             <span class="px-2 py-0.5 rounded-full bg-cyan-50 border border-cyan-200 text-cyan-800 font-bold text-[10px] uppercase">
@@ -629,6 +638,21 @@ defineExpose({
                         <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                             <button
                                 type="button"
+                                @click="handleToggleLock(pay)"
+                                :disabled="paymentStore.isSaving"
+                                :class="[
+                                    'p-1.5 rounded-lg border text-xs cursor-pointer transition-colors',
+                                    pay.is_locked
+                                        ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                                        : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+                                ]"
+                                :title="pay.is_locked ? 'Locked - Click to Unlock' : 'Unlocked - Click to Lock'"
+                            >
+                                <Lock v-if="pay.is_locked" class="w-3.5 h-3.5" />
+                                <Unlock v-else class="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                                type="button"
                                 @click="openViewModal(pay)"
                                 class="px-3 py-1.5 rounded-lg bg-cyan-50 hover:bg-cyan-100 text-cyan-800 border border-cyan-200 text-xs font-bold flex items-center gap-1"
                             >
@@ -637,17 +661,29 @@ defineExpose({
                             </button>
                             <button
                                 type="button"
+                                :disabled="pay.is_locked"
                                 @click="openEditModal(pay)"
-                                class="p-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs"
-                                title="Edit Voucher"
+                                :class="[
+                                    'p-1.5 rounded-lg border text-xs transition-colors',
+                                    pay.is_locked
+                                        ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                        : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                                ]"
+                                :title="pay.is_locked ? 'Voucher is locked' : 'Edit Voucher'"
                             >
                                 <Edit3 class="w-3.5 h-3.5" />
                             </button>
                             <button
                                 type="button"
+                                :disabled="pay.is_locked"
                                 @click="confirmDelete(pay)"
-                                class="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs"
-                                title="Delete Voucher"
+                                :class="[
+                                    'p-1.5 rounded-lg border text-xs transition-colors',
+                                    pay.is_locked
+                                        ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                        : 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                                ]"
+                                :title="pay.is_locked ? 'Voucher is locked' : 'Delete Voucher'"
                             >
                                 <Trash2 class="w-3.5 h-3.5" />
                             </button>
@@ -694,8 +730,13 @@ defineExpose({
                                 :key="pay.id"
                                 class="hover:bg-slate-50 transition-colors"
                             >
-                                <td class="py-3.5 px-4 font-mono font-bold text-slate-900">
-                                    {{ pay.payment_no }}
+                                <td class="py-3.5 px-4">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="font-mono font-bold text-slate-900">{{ pay.payment_no }}</span>
+                                        <span v-if="pay.is_locked" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 font-semibold text-[10px]" title="Voucher Locked">
+                                            <Lock class="w-3 h-3" /> Locked
+                                        </span>
+                                    </div>
                                 </td>
 
                                 <td class="py-3.5 px-4 font-mono text-slate-700">
@@ -743,25 +784,52 @@ defineExpose({
                                     <div class="inline-flex items-center gap-1.5">
                                         <button
                                             type="button"
+                                            @click="handleToggleLock(pay)"
+                                            :disabled="paymentStore.isSaving"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border cursor-pointer',
+                                                pay.is_locked
+                                                    ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'
+                                            ]"
+                                            :title="pay.is_locked ? 'Locked - Click to Unlock' : 'Unlocked - Click to Lock'"
+                                        >
+                                            <Lock v-if="pay.is_locked" class="w-3.5 h-3.5" />
+                                            <Unlock v-else class="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                            type="button"
                                             @click="openViewModal(pay)"
-                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-cyan-700 transition-colors border border-slate-200"
+                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-cyan-700 transition-colors border border-slate-200 cursor-pointer"
                                             title="View Payment Voucher"
                                         >
                                             <Eye class="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             type="button"
+                                            :disabled="pay.is_locked"
                                             @click="openEditModal(pay)"
-                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-amber-700 transition-colors border border-slate-200"
-                                            title="Edit Payment Voucher"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border',
+                                                pay.is_locked
+                                                    ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                                    : 'bg-slate-100 hover:bg-slate-200 text-amber-700 border-slate-200 cursor-pointer'
+                                            ]"
+                                            :title="pay.is_locked ? 'Voucher is locked and cannot be edited' : 'Edit Payment Voucher'"
                                         >
                                             <Edit3 class="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             type="button"
+                                            :disabled="pay.is_locked"
                                             @click="confirmDelete(pay)"
-                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-red-600 transition-colors border border-slate-200"
-                                            title="Delete Payment Voucher"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border',
+                                                pay.is_locked
+                                                    ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                                    : 'bg-slate-100 hover:bg-slate-200 text-red-600 border-slate-200 cursor-pointer'
+                                            ]"
+                                            :title="pay.is_locked ? 'Voucher is locked and cannot be deleted' : 'Delete Payment Voucher'"
                                         >
                                             <Trash2 class="w-3.5 h-3.5" />
                                         </button>
@@ -1177,9 +1245,23 @@ defineExpose({
                             <Receipt class="w-5 h-5" />
                         </div>
                         <div>
-                            <h3 class="font-bold text-base text-slate-900">
-                                Purchase Payment Voucher: {{ viewingPayment.payment_no }}
-                            </h3>
+                            <div class="flex items-center gap-2">
+                                <h3 class="font-bold text-base text-slate-900">
+                                    Purchase Payment Voucher: {{ viewingPayment.payment_no }}
+                                </h3>
+                                <span
+                                    :class="[
+                                        'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border',
+                                        viewingPayment.is_locked
+                                            ? 'bg-red-50 text-red-700 border-red-200'
+                                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    ]"
+                                >
+                                    <Lock v-if="viewingPayment.is_locked" class="w-3 h-3" />
+                                    <Unlock v-else class="w-3 h-3" />
+                                    <span>{{ viewingPayment.is_locked ? 'Locked' : 'Unlocked' }}</span>
+                                </span>
+                            </div>
                             <p class="text-[11px] text-slate-500">Vendor disbursement voucher & invoice settlement summary</p>
                         </div>
                     </div>

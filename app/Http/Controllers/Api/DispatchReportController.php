@@ -22,9 +22,22 @@ class DispatchReportController extends Controller
             'items.item',
             'items.commissionAgent',
             'paymentItems.payment.party',
+            'paymentItems.payment.commissionAgent',
+            'paymentItems.payment.items.outward',
+            'paymentItems.commissionAgent',
         ])->withSum(['paymentItems as payment_discount_amount' => function ($q) {
             $q->whereHas('payment', fn ($pq) => $pq->whereNull('deleted_at'));
-        }], 'discount_amount');
+        }], 'discount_amount')
+            ->withSum(['paymentItems as payment_commission_amount' => function ($q) {
+                $q->whereHas('payment', fn ($pq) => $pq->whereNull('deleted_at'));
+            }], 'commission_amount')
+            ->where(function ($q) {
+                $q->where('paid_amount', '>', 0)
+                    ->orWhereHas('paymentItems', function ($piq) {
+                        $piq->where('paid_amount', '>', 0)
+                            ->whereHas('payment', fn ($pq) => $pq->whereNull('deleted_at'));
+                    });
+            });
 
         // Filter: Customer / Party
         $partyId = $request->query('party_id');
@@ -39,6 +52,9 @@ class DispatchReportController extends Controller
                 $q->where('agent_id', $agentId)
                     ->orWhereHas('items', function ($iq) use ($agentId) {
                         $iq->where('commission_agent_id', $agentId);
+                    })
+                    ->orWhereHas('paymentItems', function ($piq) use ($agentId) {
+                        $piq->where('commission_agent_id', $agentId);
                     });
             });
         }
@@ -104,6 +120,9 @@ class DispatchReportController extends Controller
                                 $itq->where('category', 'like', "%{$search}%")
                                     ->orWhere('size', 'like', "%{$search}%");
                             });
+                    })
+                    ->orWhereHas('paymentItems', function ($piq) use ($search) {
+                        $piq->where('commission_agent_name', 'like', "%{$search}%");
                     });
             });
         }
@@ -130,10 +149,13 @@ class DispatchReportController extends Controller
             $paymentModes = [];
             $bankNames = [];
             $advancePaid = 0;
+            $paymentCommission = 0;
+            $paymentCommissionAgentName = null;
+            $receipts = [];
 
             foreach ($outward->paymentItems as $pItem) {
                 $payment = $pItem->payment;
-                if ($payment) {
+                if ($payment && empty($payment->deleted_at)) {
                     if (! empty($payment->payment_mode)) {
                         $paymentModes[] = $payment->payment_mode;
                     }
@@ -148,8 +170,68 @@ class DispatchReportController extends Controller
                     ) {
                         $advancePaid += (float) $pItem->paid_amount;
                     }
+
+                    if ((float) $pItem->commission_amount > 0) {
+                        $paymentCommission += (float) $pItem->commission_amount;
+                        if (! $paymentCommissionAgentName) {
+                            $paymentCommissionAgentName = $pItem->commission_agent_name ?: ($pItem->commissionAgent?->name ?: null);
+                        }
+                    }
+
+                    if (! isset($receipts[$payment->id])) {
+                        $paymentVoucherItems = [];
+                        foreach ($payment->items as $vItem) {
+                            $vOutward = $vItem->outward;
+                            $paymentVoucherItems[] = [
+                                'id' => $vItem->id,
+                                'stock_outward_id' => $vItem->stock_outward_id,
+                                'entry_no' => $vOutward?->entry_no ?: "OUT-{$vItem->stock_outward_id}",
+                                'challan_no' => $vOutward?->challan_no ?: '',
+                                'invoice_date' => $vOutward?->invoice_date ? $vOutward->invoice_date->format('Y-m-d') : ($vOutward?->challan_date ? $vOutward->challan_date->format('Y-m-d') : ''),
+                                'invoice_amount' => (float) ($vItem->invoice_amount ?: ($vOutward?->total_amount ?? 0)),
+                                'discount_amount' => (float) $vItem->discount_amount,
+                                'paid_amount' => (float) $vItem->paid_amount,
+                                'commission_amount' => (float) $vItem->commission_amount,
+                                'commission_agent_name' => $vItem->commission_agent_name ?: ($vItem->commissionAgent?->name ?? ''),
+                                'remarks' => $vItem->remarks ?: '',
+                            ];
+                        }
+
+                        $receipts[$payment->id] = [
+                            'id' => $payment->id,
+                            'payment_no' => $payment->payment_no,
+                            'payment_date' => $payment->payment_date ? $payment->payment_date->format('Y-m-d') : '',
+                            'amount' => (float) $payment->amount,
+                            'discount_amount' => (float) $payment->discount_amount,
+                            'commission_amount' => (float) $payment->commission_amount,
+                            'payment_mode' => $payment->payment_mode,
+                            'reference_no' => $payment->reference_no,
+                            'bank_name' => $payment->bank_name,
+                            'party_id' => $payment->party_id,
+                            'party_name' => $payment->party_name ?: ($payment->party?->name ?? ''),
+                            'party' => $payment->party ? [
+                                'name' => $payment->party->name,
+                                'code' => $payment->party->code,
+                                'phone' => $payment->party->phone,
+                                'gstin' => $payment->party->gstin,
+                                'city' => $payment->party->city,
+                                'address' => $payment->party->address,
+                            ] : null,
+                            'commission_agent_name' => $payment->commission_agent_name ?: ($payment->commissionAgent?->name ?? ''),
+                            'remarks' => $payment->remarks,
+                            'is_locked' => (bool) $payment->is_locked,
+                            'allocated_paid' => (float) $pItem->paid_amount,
+                            'allocated_discount' => (float) $pItem->discount_amount,
+                            'allocated_commission' => (float) $pItem->commission_amount,
+                            'items' => $paymentVoucherItems,
+                        ];
+                    }
                 }
             }
+
+            $receiptsList = array_values($receipts);
+            $primaryReceiptNo = count($receiptsList) > 0 ? implode(', ', array_column($receiptsList, 'payment_no')) : null;
+            $primaryReceiptId = count($receiptsList) > 0 ? $receiptsList[0]['id'] : null;
 
             $uniqueModes = array_values(array_unique(array_filter($paymentModes)));
             $uniqueBanks = array_values(array_unique(array_filter($bankNames)));
@@ -160,10 +242,12 @@ class DispatchReportController extends Controller
             $outwardDiscount = (float) $outward->discount_amount + (float) ($outward->payment_discount_amount ?? 0);
             $outwardTotal = (float) $outward->total_amount;
             $outwardSubtotal = (float) $outward->subtotal;
+            $outwardCommissionTotal = (float) ($outward->commission_amount ?? 0) + (float) $paymentCommission;
 
             if ($itemCount === 0) {
                 // Outward without separate line items fallback
                 $pending = max(0, round($outwardTotal - $outwardPaid - $outwardDiscount, 2));
+                $seller = $outward->agent?->name ?: ($outward->agent_name ?: ($paymentCommissionAgentName ?: 'Open'));
 
                 $row = [
                     'id' => $outward->id,
@@ -185,13 +269,17 @@ class DispatchReportController extends Controller
                     'receive_pay' => $outwardPaid,
                     'pending' => $pending,
                     'relief' => $outwardDiscount,
-                    'commission' => (float) ($outward->commission_amount ?? 0),
+                    'discount' => $outwardDiscount,
+                    'commission' => $outwardCommissionTotal,
                     'in_acc' => $inAccStr,
-                    'seller' => $outward->agent?->name ?: ($outward->agent_name ?: 'Open'),
+                    'seller' => $seller,
                     'note' => $outward->remarks ?: '',
                     'vehicle_no' => $outward->vehicle_no,
                     'challan_no' => $outward->challan_no,
                     'payment_status' => $outward->payment_status,
+                    'receipts' => $receiptsList,
+                    'primary_receipt_no' => $primaryReceiptNo,
+                    'primary_receipt_id' => $primaryReceiptId,
                 ];
 
                 $rows[] = $row;
@@ -200,10 +288,13 @@ class DispatchReportController extends Controller
                 $totalReceived += $outwardPaid;
                 $totalPending += $pending;
                 $totalRelief += $outwardDiscount;
-                $totalCommission += (float) ($outward->commission_amount ?? 0);
+                $totalCommission += $outwardCommissionTotal;
             } else {
                 $sumItemDiscounts = (float) $items->sum('discount_amount');
                 $headerDiscountOnly = max(0, (float) $outward->discount_amount - $sumItemDiscounts);
+
+                $sumItemCommission = (float) $items->sum('commission_amount');
+                $headerAndPaymentCommission = max(0, (float) ($outward->commission_amount ?? 0) - $sumItemCommission) + (float) $paymentCommission;
 
                 foreach ($items as $item) {
                     $itemQty = (float) $item->qty;
@@ -218,6 +309,10 @@ class DispatchReportController extends Controller
                     $allocatedPaymentDiscount = $itemCount === 1 ? (float) ($outward->payment_discount_amount ?? 0) : round((float) ($outward->payment_discount_amount ?? 0) * $ratio, 2);
                     $allocatedRelief = round($itemDirectDiscount + $allocatedHeaderDiscount + $allocatedPaymentDiscount, 2);
                     $allocatedAdvance = $itemCount === 1 ? $advancePaid : round($advancePaid * $ratio, 2);
+
+                    $itemDirectCommission = (float) $item->commission_amount;
+                    $allocatedCommission = $itemCount === 1 ? $headerAndPaymentCommission : round($headerAndPaymentCommission * $ratio, 2);
+                    $commission = round($itemDirectCommission + $allocatedCommission, 2);
 
                     $pending = max(0, round($itemTotal - $allocatedPaid - $allocatedRelief, 2));
 
@@ -235,11 +330,8 @@ class DispatchReportController extends Controller
                     // OPC Mix recipe
                     $opcVal = ! empty($item->lotno) ? $item->lotno : ($item->item?->type === 'fg' ? 'OPC' : ($item->item?->category ?? 'OPC'));
 
-                    // Commission
-                    $commission = (float) ($item->commission_amount > 0 ? $item->commission_amount : ($itemCount === 1 ? ($outward->commission_amount ?? 0) : 0));
-
                     // Seller / Agent
-                    $seller = $item->commission_agent_name ?: ($item->commissionAgent?->name ?: ($outward->agent?->name ?: ($outward->agent_name ?: 'Open')));
+                    $seller = $item->commission_agent_name ?: ($item->commissionAgent?->name ?: ($outward->agent?->name ?: ($outward->agent_name ?: ($paymentCommissionAgentName ?: 'Open'))));
 
                     // Note
                     $note = $item->remarks ?: ($outward->remarks ?: '');
@@ -265,6 +357,7 @@ class DispatchReportController extends Controller
                         'receive_pay' => $allocatedPaid,
                         'pending' => $pending,
                         'relief' => $allocatedRelief,
+                        'discount' => $allocatedRelief,
                         'commission' => $commission,
                         'in_acc' => $inAccStr,
                         'seller' => $seller,
@@ -272,6 +365,9 @@ class DispatchReportController extends Controller
                         'vehicle_no' => $outward->vehicle_no,
                         'challan_no' => $outward->challan_no,
                         'payment_status' => $outward->payment_status,
+                        'receipts' => $receiptsList,
+                        'primary_receipt_no' => $primaryReceiptNo,
+                        'primary_receipt_id' => $primaryReceiptId,
                     ];
 
                     $rows[] = $row;
@@ -316,6 +412,7 @@ class DispatchReportController extends Controller
                     'total_received' => round($totalReceived, 2),
                     'total_pending' => round($totalPending, 2),
                     'total_relief' => round($totalRelief, 2),
+                    'total_discount' => round($totalRelief, 2),
                     'total_commission' => round($totalCommission, 2),
                 ],
             ],

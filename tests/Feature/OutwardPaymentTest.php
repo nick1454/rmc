@@ -427,3 +427,78 @@ test('all pending outwards endpoint returns sales outwards and excludes returns 
         ->and($returnedIds)->not->toContain($returnOutward->id)
         ->and($returnedIds)->not->toContain($paidOutward->id);
 });
+
+test('can toggle lock status on outward payment receipt and prevent update or deletion when locked', function () {
+    $user = User::factory()->create();
+
+    $customer = Party::create([
+        'name' => 'Customer '.uniqid(),
+        'type' => 'customer',
+        'status' => 'active',
+        'code' => 'CUST-'.rand(1000, 9999),
+    ]);
+
+    $outward = StockOutward::create([
+        'entry_no' => 'OUT-TEST-LOCK-'.uniqid(),
+        'entry_type' => 'sales',
+        'party_id' => $customer->id,
+        'customer' => $customer->name,
+        'invoice_date' => '2026-09-28',
+        'total_amount' => 15000.00,
+        'paid_amount' => 0.00,
+        'payment_status' => 'unpaid',
+    ]);
+
+    $createRes = $this->actingAs($user)->postJson('/api/v1/outward-payments', [
+        'payment_no' => 'REC-TEST-LOCK-'.uniqid(),
+        'payment_date' => '2026-09-29',
+        'party_id' => $customer->id,
+        'payment_mode' => 'bank_transfer',
+        'amount' => 15000.00,
+        'items' => [
+            [
+                'stock_outward_id' => $outward->id,
+                'paid_amount' => 15000.00,
+            ],
+        ],
+    ]);
+
+    $paymentId = $createRes->json('data.id');
+
+    // 1. Toggle lock -> Lock
+    $lockRes = $this->actingAs($user)->postJson("/api/v1/outward-payments/{$paymentId}/toggle-lock");
+    $lockRes->assertOk();
+    expect($lockRes->json('data.is_locked'))->toBeTrue()
+        ->and($lockRes->json('data.locked_by.id'))->toBe($user->id);
+
+    // 2. Attempt update while locked -> 422
+    $updateRes = $this->actingAs($user)->putJson("/api/v1/outward-payments/{$paymentId}", [
+        'payment_no' => $createRes->json('data.payment_no'),
+        'payment_date' => '2026-09-29',
+        'party_id' => $customer->id,
+        'payment_mode' => 'cash',
+        'amount' => 15000.00,
+        'items' => [
+            [
+                'stock_outward_id' => $outward->id,
+                'paid_amount' => 15000.00,
+            ],
+        ],
+    ]);
+    $updateRes->assertStatus(422);
+    expect($updateRes->json('message'))->toContain('locked and cannot be modified');
+
+    // 3. Attempt delete while locked -> 422
+    $deleteRes = $this->actingAs($user)->deleteJson("/api/v1/outward-payments/{$paymentId}");
+    $deleteRes->assertStatus(422);
+    expect($deleteRes->json('message'))->toContain('locked and cannot be deleted');
+
+    // 4. Toggle lock -> Unlock
+    $unlockRes = $this->actingAs($user)->postJson("/api/v1/outward-payments/{$paymentId}/toggle-lock");
+    $unlockRes->assertOk();
+    expect($unlockRes->json('data.is_locked'))->toBeFalse();
+
+    // 5. Delete succeeds after unlock
+    $deleteRes2 = $this->actingAs($user)->deleteJson("/api/v1/outward-payments/{$paymentId}");
+    $deleteRes2->assertOk();
+});

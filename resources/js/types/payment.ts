@@ -36,6 +36,10 @@ export interface PurchasePayment {
     bank_name?: string | null;
     amount: number | string;
     remarks?: string | null;
+    is_locked?: boolean;
+    locked_at?: string | null;
+    locked_by?: number | { id: number; name: string } | null;
+    lockedBy?: { id: number; name: string } | null;
     created_by?: number | null;
     updated_by?: number | null;
     created_at?: string;

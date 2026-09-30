@@ -106,6 +106,47 @@ export interface StockLedgerData {
     };
 }
 
+export interface DispatchReportReceiptItem {
+    id: number;
+    payment_no: string;
+    payment_date: string;
+    amount: number;
+    discount_amount: number;
+    commission_amount: number;
+    payment_mode: string;
+    reference_no?: string;
+    bank_name?: string;
+    party_id?: number | null;
+    party_name?: string;
+    party?: {
+        name?: string;
+        code?: string;
+        phone?: string;
+        gstin?: string;
+        city?: string;
+        address?: string;
+    } | null;
+    commission_agent_name?: string;
+    remarks?: string;
+    is_locked?: boolean;
+    allocated_paid?: number;
+    allocated_discount?: number;
+    allocated_commission?: number;
+    items?: Array<{
+        id?: number;
+        stock_outward_id?: number;
+        entry_no?: string;
+        challan_no?: string;
+        invoice_date?: string;
+        invoice_amount?: number;
+        discount_amount?: number;
+        paid_amount?: number;
+        commission_amount?: number;
+        commission_agent_name?: string;
+        remarks?: string;
+    }>;
+}
+
 export interface DispatchReportRow {
     id: number;
     item_id: number | null;
@@ -126,6 +167,7 @@ export interface DispatchReportRow {
     receive_pay: number;
     pending: number;
     relief: number;
+    discount?: number;
     commission: number;
     in_acc: string;
     seller: string;
@@ -133,6 +175,9 @@ export interface DispatchReportRow {
     vehicle_no?: string;
     challan_no?: string;
     payment_status?: string;
+    receipts?: DispatchReportReceiptItem[];
+    primary_receipt_no?: string | null;
+    primary_receipt_id?: number | null;
 }
 
 export interface DispatchReportTotals {
@@ -143,6 +188,7 @@ export interface DispatchReportTotals {
     total_received: number;
     total_pending: number;
     total_relief: number;
+    total_discount?: number;
     total_commission: number;
 }
 

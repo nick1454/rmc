@@ -25,6 +25,7 @@ class PurchasePaymentController extends Controller
             'items.inward:id,inward_no,challan_no,supplier_bill_no,challan_date,grand_total,paid_amount,payment_status',
             'creator:id,name',
             'updater:id,name',
+            'lockedBy:id,name',
         ])->withCount('items');
 
         // Search filter
@@ -288,6 +289,7 @@ class PurchasePaymentController extends Controller
             'items.inward.items.item',
             'creator:id,name',
             'updater:id,name',
+            'lockedBy:id,name',
         ])->findOrFail($id);
 
         return response()->json([
@@ -302,6 +304,13 @@ class PurchasePaymentController extends Controller
     public function update(Request $request, int $id): JsonResponse
     {
         $payment = PurchasePayment::findOrFail($id);
+
+        if ($payment->is_locked) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This purchase payment voucher is locked and cannot be modified. Please unlock it first.',
+            ], 422);
+        }
 
         $validated = $request->validate([
             'payment_no' => ['required', 'string', 'max:50', Rule::unique('purchase_payments', 'payment_no')->ignore($id)->whereNull('deleted_at')],
@@ -382,6 +391,7 @@ class PurchasePaymentController extends Controller
             'items.inward',
             'creator',
             'updater',
+            'lockedBy',
         ]);
 
         return response()->json([
@@ -398,6 +408,13 @@ class PurchasePaymentController extends Controller
     {
         $payment = PurchasePayment::findOrFail($id);
 
+        if ($payment->is_locked) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'This purchase payment voucher is locked and cannot be deleted. Please unlock it first.',
+            ], 422);
+        }
+
         DB::transaction(function () use ($payment) {
             $affectedInwardIds = $payment->items()->pluck('stock_inward_id')->toArray();
 
@@ -413,6 +430,35 @@ class PurchasePaymentController extends Controller
         return response()->json([
             'status' => 'success',
             'message' => 'Purchase payment voucher deleted successfully.',
+        ]);
+    }
+
+    /**
+     * Toggle lock status on the specified purchase payment voucher.
+     */
+    public function toggleLock(int $id): JsonResponse
+    {
+        $payment = PurchasePayment::findOrFail($id);
+
+        $payment->is_locked = ! $payment->is_locked;
+        $payment->locked_at = $payment->is_locked ? now() : null;
+        $payment->locked_by = $payment->is_locked ? auth()->id() : null;
+        $payment->save();
+
+        $payment->load([
+            'party:id,name,code,phone,gstin,city',
+            'items.inward:id,inward_no,challan_no,supplier_bill_no,challan_date,grand_total,paid_amount,payment_status',
+            'creator:id,name',
+            'updater:id,name',
+            'lockedBy:id,name',
+        ]);
+
+        $statusText = $payment->is_locked ? 'locked' : 'unlocked';
+
+        return response()->json([
+            'status' => 'success',
+            'message' => "Purchase payment voucher {$payment->payment_no} {$statusText} successfully.",
+            'data' => $payment,
         ]);
     }
 }

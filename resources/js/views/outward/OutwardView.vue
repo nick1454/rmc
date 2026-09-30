@@ -24,7 +24,10 @@ import {
     FileText,
     Building2,
     MapPin,
-    CreditCard
+    CreditCard,
+    Boxes,
+    PackageCheck,
+    AlertTriangle
 } from 'lucide-vue-next';
 
 const router = useRouter();
@@ -43,6 +46,11 @@ const OUTWARD_TYPES = [
 const isFormModalOpen = ref(false);
 const isViewModalOpen = ref(false);
 const isDeleteModalOpen = ref(false);
+const isStockModalOpen = ref(false);
+const targetItemRowIndex = ref<number | null>(null);
+const stockTypeFilter = ref<'all' | 'fg' | 'rm'>('all');
+const stockCategoryFilter = ref<string>('all');
+const stockItemFilter = ref<number | 'all'>('all');
 
 const editingOutward = ref<StockOutward | null>(null);
 const viewingOutward = ref<StockOutward | null>(null);
@@ -282,9 +290,7 @@ const addItemRow = () => {
 
 // Remove item row
 const removeItemRow = (index: number) => {
-    if (form.value.items.length > 1) {
-        form.value.items.splice(index, 1);
-    }
+    form.value.items.splice(index, 1);
 };
 
 // When master item selection changes in row
@@ -302,6 +308,9 @@ const onItemChange = (index: number) => {
         row.secondary_unit = secUnit;
         row.conversion_factor = factor;
         row.gst_rate = gstRate;
+        if (selectedItem.batch_no) {
+            row.lotno = selectedItem.batch_no;
+        }
 
         // Recalculate secondary qty
         const primQty = Number(row.qty) || 0;
@@ -363,14 +372,7 @@ const formTotalLinePumpCost = computed(() => {
 });
 
 const formGrandTotal = computed(() => {
-    const sub = formSubtotal.value;
-    const tax = formTaxTotal.value;
-    const pump = formTotalLinePumpCost.value;
-    const freight = Number(form.value.freight_charges) || 0;
-    const headerDisc = Number(form.value.discount_amount) || 0;
-    const lineDisc = formTotalLineDiscount.value;
-    const extraDisc = Math.max(0, headerDisc - lineDisc);
-    return Math.max(0, Math.round((sub + tax + pump + freight - extraDisc) * 100) / 100);
+    return form.value.items.reduce((acc, row) => acc + (Number(row.total_amount) || 0), 0);
 });
 
 // Modal Actions
@@ -386,7 +388,7 @@ const openCreateModal = async () => {
         customer: outwardStore.customers[0]?.name || '',
         agent_id: outwardStore.agents[0]?.id || null,
         agent_name: outwardStore.agents[0]?.name || '',
-        items: [initialItemRow()],
+        items: [],
     };
     isFormModalOpen.value = true;
 };
@@ -445,10 +447,6 @@ const openEditModal = (outward: StockOutward) => {
         }),
     };
 
-    if (form.value.items.length === 0) {
-        form.value.items.push(initialItemRow());
-    }
-
     isFormModalOpen.value = true;
 };
 
@@ -467,7 +465,18 @@ const closeViewModal = () => {
     viewingOutward.value = null;
 };
 
+const isOutwardPaymentRestricted = (outward: StockOutward): boolean => {
+    return Number(outward.paid_amount || 0) > 0 ||
+        Number((outward as any).payment_discount_amount || 0) > 0 ||
+        outward.payment_status === 'paid' ||
+        outward.payment_status === 'partially_paid';
+};
+
 const confirmDelete = (outward: StockOutward) => {
+    if (isOutwardPaymentRestricted(outward)) {
+        alert(`Cannot delete outward consignment ${outward.entry_no} because payment (partial/full) has already been recorded against it.`);
+        return;
+    }
     outwardStore.clearMessages();
     deletingOutward.value = outward;
     isDeleteModalOpen.value = true;
@@ -475,14 +484,218 @@ const confirmDelete = (outward: StockOutward) => {
 
 const handleDelete = async () => {
     if (deletingOutward.value) {
-        await outwardStore.deleteOutward(deletingOutward.value.id);
-        isDeleteModalOpen.value = false;
-        deletingOutward.value = null;
+        const ok = await outwardStore.deleteOutward(deletingOutward.value.id);
+        if (ok) {
+            isDeleteModalOpen.value = false;
+            deletingOutward.value = null;
+        }
     }
 };
 
+// Calculate drafted quantity for an item across current form rows (optionally excluding a specific row)
+const getDraftedItemQty = (itemId: number, excludeRowIndex?: number | null): number => {
+    if (!form.value?.items) return 0;
+    return form.value.items.reduce((sum, row, idx) => {
+        if (excludeRowIndex !== undefined && excludeRowIndex !== null && idx === excludeRowIndex) {
+            return sum;
+        }
+        if (Number(row.item_id) === Number(itemId)) {
+            return sum + (Number(row.qty) || 0);
+        }
+        return sum;
+    }, 0);
+};
+
+// Calculate live net available stock for an item considering what has already been drafted in this outward
+const getItemNetAvailable = (itemId: number, excludeRowIndex?: number | null) => {
+    const rawItem = outwardStore.items.find((it) => it.id === itemId);
+    if (!rawItem) {
+        return {
+            primary: 0,
+            secondary: 0,
+            is_stock_exempt: false,
+            in_stock: false,
+            item: null,
+        };
+    }
+
+    if (rawItem.is_stock_exempt) {
+        return {
+            primary: 999999,
+            secondary: 999999,
+            is_stock_exempt: true,
+            in_stock: true,
+            item: rawItem,
+        };
+    }
+
+    const basePrimary = Number(rawItem.available_primary) || 0;
+    const factor = Number(rawItem.conversion_factor) || 1.0;
+    const draftedQty = getDraftedItemQty(itemId, excludeRowIndex);
+    const netPrimary = Math.max(0, Math.round((basePrimary - draftedQty) * 10000) / 10000);
+    const netSecondary = factor > 0 ? Math.round(netPrimary * factor * 10000) / 10000 : netPrimary;
+
+    return {
+        primary: netPrimary,
+        secondary: netSecondary,
+        is_stock_exempt: false,
+        in_stock: netPrimary > 0,
+        item: rawItem,
+    };
+};
+
+// Exclude water, stock-exempt items, AND any nil stock items (net available <= 0)
+const validStockItemsList = computed(() => {
+    const targetIdx = targetItemRowIndex.value;
+    return (outwardStore.items || [])
+        .filter((it: any) => {
+            const cat = (it.category || '').toLowerCase().trim();
+            const name = (it.name || '').toLowerCase().trim();
+            const size = (it.size || '').toLowerCase().trim();
+            return !it.is_stock_exempt && !cat.includes('water') && !name.includes('water') && !size.includes('water');
+        })
+        .map((it: any) => {
+            const net = getItemNetAvailable(it.id, targetIdx);
+            return {
+                ...it,
+                available_primary: net.primary,
+                available_secondary: net.secondary,
+                in_stock: net.in_stock,
+            };
+        })
+        .filter((it: any) => Number(it.available_primary) > 0);
+});
+
+const inStockCount = computed(() => {
+    return validStockItemsList.value.length;
+});
+
+const stockCategoryOptions = computed(() => {
+    let items = validStockItemsList.value;
+    if (stockTypeFilter.value !== 'all') {
+        items = items.filter((it: any) => it.type === stockTypeFilter.value);
+    }
+    const cats = Array.from(new Set(items.map((it: any) => it.category).filter(Boolean)));
+    return cats.sort();
+});
+
+const stockItemOptions = computed(() => {
+    let items = validStockItemsList.value;
+    if (stockTypeFilter.value !== 'all') {
+        items = items.filter((it: any) => it.type === stockTypeFilter.value);
+    }
+    if (stockCategoryFilter.value !== 'all') {
+        items = items.filter((it: any) => it.category === stockCategoryFilter.value);
+    }
+    return items;
+});
+
+const onStockTypeFilterChange = () => {
+    stockCategoryFilter.value = 'all';
+    stockItemFilter.value = 'all';
+};
+
+const onStockCategoryFilterChange = () => {
+    stockItemFilter.value = 'all';
+};
+
+const filteredStockItems = computed(() => {
+    let list = validStockItemsList.value;
+
+    if (stockTypeFilter.value !== 'all') {
+        list = list.filter((it: any) => it.type === stockTypeFilter.value);
+    }
+
+    if (stockCategoryFilter.value !== 'all') {
+        list = list.filter((it: any) => it.category === stockCategoryFilter.value);
+    }
+
+    if (stockItemFilter.value !== 'all') {
+        list = list.filter((it: any) => it.id === Number(stockItemFilter.value));
+    }
+
+    return list;
+});
+
+const getItemStockInfo = (itemId: number) => {
+    return outwardStore.items.find((it) => it.id === itemId);
+};
+
+const openStockModal = (rowIndex?: number) => {
+    targetItemRowIndex.value = rowIndex !== undefined ? rowIndex : null;
+    stockTypeFilter.value = 'all';
+    stockCategoryFilter.value = 'all';
+    stockItemFilter.value = 'all';
+    isStockModalOpen.value = true;
+};
+
+const closeStockModal = () => {
+    isStockModalOpen.value = false;
+    targetItemRowIndex.value = null;
+};
+
+const selectStockItem = (item: any) => {
+    const factor = Number(item.conversion_factor) || 1.0;
+    const gstRate = Number(item.gst_per || item.gst_rate) || 0;
+    const primUnit = item.primary_unit || (item.type === 'fg' ? 'cum' : 'ton');
+    const secUnit = item.secondary_unit || (item.type === 'fg' ? 'cum' : 'kgs');
+    const available = Number(item.available_primary) || 0;
+    const batchNo = item.batch_no || '';
+
+    if (targetItemRowIndex.value !== null && form.value.items[targetItemRowIndex.value]) {
+        const row = form.value.items[targetItemRowIndex.value];
+        row.item_id = item.id;
+        row.item = item;
+        row.unit = primUnit;
+        row.secondary_unit = secUnit;
+        row.conversion_factor = factor;
+        row.gst_rate = gstRate;
+        row.lotno = batchNo;
+        if (Number(row.qty) <= 0 || Number(row.qty) > available) {
+            row.qty = item.type === 'fg' ? Math.min(6, available) : Math.min(10, available);
+        }
+        const primQty = Number(row.qty) || 0;
+        row.secondary_qty = factor > 0 ? Number((primQty * factor).toFixed(4)) : primQty;
+        recalculateRow(row);
+    } else {
+        const defaultQty = item.type === 'fg'
+            ? Math.min(6, available > 0 ? available : 6)
+            : Math.min(10, available > 0 ? available : 10);
+
+        const row: StockOutwardItemInput = {
+            item_id: item.id,
+            qty: defaultQty,
+            unit: primUnit,
+            secondary_qty: factor > 0 ? Number((defaultQty * factor).toFixed(4)) : defaultQty,
+            secondary_unit: secUnit,
+            conversion_factor: factor,
+            rate: 0,
+            pump_cost: 0,
+            discount_percent: 0,
+            discount_amount: 0,
+            taxable_amount: 0,
+            gst_rate: gstRate,
+            gst_amount: 0,
+            total_amount: 0,
+            commission_agent_id: form.value?.agent_id || null,
+            commission_agent_name: form.value?.agent_name || '',
+            commission_rate: 0,
+            commission_amount: 0,
+            lotno: batchNo,
+            remarks: '',
+            item: item,
+        };
+        recalculateRow(row);
+        form.value.items.push(row);
+    }
+
+    closeStockModal();
+};
+
 const closeAllModals = () => {
-    if (isDeleteModalOpen.value) {
+    if (isStockModalOpen.value) {
+        closeStockModal();
+    } else if (isDeleteModalOpen.value) {
         isDeleteModalOpen.value = false;
         deletingOutward.value = null;
     } else if (isViewModalOpen.value) {
@@ -495,12 +708,55 @@ const closeAllModals = () => {
 useEscapeKey(closeAllModals);
 
 const submitForm = async () => {
-    if (editingOutward.value) {
-        await outwardStore.updateOutward(editingOutward.value.id, form.value);
-    } else {
-        await outwardStore.createOutward(form.value);
+    if (form.value.items.length === 0) {
+        alert('Please add at least one line item to create the outward consignment.');
+        return;
     }
-    closeFormModal();
+
+    // If editing outward with payments, ensure quantities are not reduced below paid quantity
+    if (editingOutward.value && isOutwardPaymentRestricted(editingOutward.value)) {
+        const totalPaid = Number(editingOutward.value.paid_amount || 0) + Number((editingOutward.value as any).payment_discount_amount || 0);
+        const origTotal = Number(editingOutward.value.total_amount || 0);
+        const paidRatio = origTotal > 0 ? Math.min(1, totalPaid / origTotal) : 1;
+
+        if (formGrandTotal.value < totalPaid - 0.01) {
+            alert(`Total outward amount cannot be reduced below the already recorded payment amount of ₹${totalPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })}.`);
+            return;
+        }
+
+        const newItemsGrouped: Record<number, number> = {};
+        form.value.items.forEach((row) => {
+            newItemsGrouped[Number(row.item_id)] = (newItemsGrouped[Number(row.item_id)] || 0) + (Number(row.qty) || 0);
+        });
+
+        for (const origItem of (editingOutward.value.items || [])) {
+            const minPaidQty = Number((Number(origItem.qty) * paidRatio).toFixed(4));
+            const newQty = newItemsGrouped[Number(origItem.item_id)] || 0;
+            if (newQty < (minPaidQty - 0.0001)) {
+                const itemLabel = origItem.item?.category || 'Item';
+                alert(`Quantity for '${itemLabel}' cannot be reduced below the paid quantity of ${minPaidQty} ${origItem.unit} because payment of ₹${totalPaid.toLocaleString('en-IN', { minimumFractionDigits: 2 })} has already been recorded against this consignment.`);
+                return;
+            }
+        }
+    }
+
+    const payload = {
+        ...form.value,
+        discount_amount: formTotalLineDiscount.value,
+        commission_amount: formTotalLineCommission.value,
+        freight_charges: 0,
+    };
+
+    let ok = false;
+    if (editingOutward.value) {
+        ok = await outwardStore.updateOutward(editingOutward.value.id, payload);
+    } else {
+        ok = await outwardStore.createOutward(payload);
+    }
+
+    if (ok) {
+        closeFormModal();
+    }
 };
 
 const printSlip = () => {
@@ -793,8 +1049,14 @@ const navigateToPayments = (outward?: StockOutward) => {
                             <button
                                 type="button"
                                 @click="confirmDelete(outward)"
-                                class="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs"
-                                title="Delete Outward"
+                                :disabled="isOutwardPaymentRestricted(outward)"
+                                :class="[
+                                    'p-1.5 rounded-lg border text-xs transition-colors',
+                                    isOutwardPaymentRestricted(outward)
+                                        ? 'bg-slate-100 text-slate-300 border-slate-200 cursor-not-allowed opacity-50'
+                                        : 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                                ]"
+                                :title="isOutwardPaymentRestricted(outward) ? 'Cannot delete: Payment has already been recorded' : 'Delete Outward'"
                             >
                                 <Trash2 class="w-3.5 h-3.5" />
                             </button>
@@ -953,8 +1215,14 @@ const navigateToPayments = (outward?: StockOutward) => {
                                         <button
                                             type="button"
                                             @click="confirmDelete(outward)"
-                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-red-600 transition-colors border border-slate-200"
-                                            title="Delete Outward"
+                                            :disabled="isOutwardPaymentRestricted(outward)"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border',
+                                                isOutwardPaymentRestricted(outward)
+                                                    ? 'bg-slate-50 text-slate-300 border-slate-200 cursor-not-allowed opacity-50'
+                                                    : 'bg-slate-100 hover:bg-red-50 text-red-600 hover:text-red-700 border-slate-200 hover:border-red-200'
+                                            ]"
+                                            :title="isOutwardPaymentRestricted(outward) ? 'Cannot delete: Payment has already been recorded' : 'Delete Outward'"
                                         >
                                             <Trash2 class="w-3.5 h-3.5" />
                                         </button>
@@ -1068,22 +1336,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                 </select>
                             </div>
 
-                            <!-- Customer Party -->
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-700 mb-1">Customer / Consignee</label>
-                                <select
-                                    v-model.number="form.party_id"
-                                    @change="onPartyChange"
-                                    class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 font-semibold text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                                >
-                                    <option :value="null">-- Direct / Walk-in Customer --</option>
-                                    <option v-for="p in outwardStore.customers" :key="p.id" :value="p.id">
-                                        {{ p.name }} ({{ p.code }})
-                                    </option>
-                                </select>
-                            </div>
-
-                            <!-- Customer Name (Override/Manual) -->
+                            <!-- Customer Name (Manual/Override) -->
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Customer / Client Name</label>
                                 <input
@@ -1130,16 +1383,6 @@ const navigateToPayments = (outward?: StockOutward) => {
                                 />
                             </div>
 
-                            <!-- Challan Date -->
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-700 mb-1">Challan Date</label>
-                                <input
-                                    v-model="form.challan_date"
-                                    type="date"
-                                    class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none cursor-pointer"
-                                />
-                            </div>
-
                             <!-- Vehicle / Mixer No -->
                             <div>
                                 <label class="block text-xs font-semibold text-slate-700 mb-1">Vehicle / Mixer No</label>
@@ -1172,28 +1415,6 @@ const navigateToPayments = (outward?: StockOutward) => {
                                     class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 text-xs font-mono focus:ring-2 focus:ring-amber-500 focus:outline-none"
                                 />
                             </div>
-
-                            <!-- Plant Name -->
-                            <div>
-                                <label class="block text-xs font-semibold text-slate-700 mb-1">Plant / Dispatch Source</label>
-                                <input
-                                    v-model="form.plant_name"
-                                    type="text"
-                                    placeholder="Central Batching Plant"
-                                    class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                                />
-                            </div>
-
-                            <!-- Site Destination -->
-                            <div class="sm:col-span-3">
-                                <label class="block text-xs font-semibold text-slate-700 mb-1">Site Destination / Delivery Address</label>
-                                <input
-                                    v-model="form.destination"
-                                    type="text"
-                                    placeholder="e.g. Metro Line 4 Pier #120, Powai Site"
-                                    class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                                />
-                            </div>
                         </div>
                     </div>
 
@@ -1204,57 +1425,130 @@ const navigateToPayments = (outward?: StockOutward) => {
                                 <Layers class="w-3.5 h-3.5 text-amber-600" />
                                 <span>Dispatched Finished Goods / Material Items, Rates, Discounts, Taxes & Commissions *</span>
                             </div>
-                            <button
-                                type="button"
-                                @click="addItemRow"
-                                class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all shadow-sm"
-                            >
-                                <PlusCircle class="w-3.5 h-3.5" />
-                                <span>Add Item Row</span>
-                            </button>
+                            <div class="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    @click="openStockModal()"
+                                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all shadow-sm"
+                                    title="Browse and pick from available plant stock inventory"
+                                >
+                                    <Boxes class="w-3.5 h-3.5" />
+                                    <span>Browse Stock Inventory</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    @click="addItemRow"
+                                    class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all shadow-sm"
+                                >
+                                    <PlusCircle class="w-3.5 h-3.5" />
+                                    <span>Add Item Row</span>
+                                </button>
+                            </div>
                         </div>
 
-                        <div class="overflow-x-auto bg-white rounded-xl border border-slate-200">
-                            <table class="w-full text-left text-xs min-w-[1400px]">
+                        <div class="overflow-x-auto bg-white rounded-xl border border-slate-200 shadow-xs">
+                            <table class="w-full text-left text-xs min-w-[1900px]">
                                 <thead>
                                     <tr class="bg-slate-50 text-slate-700 uppercase tracking-wider border-b border-slate-200 font-bold text-[10px]">
-                                        <th class="py-2.5 px-3">#</th>
-                                        <th class="py-2.5 px-3 w-44">Item (FG / RM) *</th>
-                                        <th class="py-2.5 px-3 w-24">Qty *</th>
-                                        <th class="py-2.5 px-3 w-20">Unit</th>
-                                        <th class="py-2.5 px-3 w-24">Sec. Qty</th>
-                                        <th class="py-2.5 px-3 w-20">Sec. Unit</th>
-                                        <th class="py-2.5 px-3 w-24">Rate (₹)</th>
-                                        <th class="py-2.5 px-3 w-24">Pump Cost (₹)</th>
-                                        <th class="py-2.5 px-3 w-20">Disc %</th>
-                                        <th class="py-2.5 px-3 w-24">Disc Amt (₹)</th>
-                                        <th class="py-2.5 px-3 text-right">Taxable (₹)</th>
-                                        <th class="py-2.5 px-3 w-20">GST %</th>
-                                        <th class="py-2.5 px-3 text-right">GST (₹)</th>
-                                        <th class="py-2.5 px-3 w-36">Comm Agent</th>
-                                        <th class="py-2.5 px-3 w-20">Comm %</th>
-                                        <th class="py-2.5 px-3 w-24">Comm Amt (₹)</th>
-                                        <th class="py-2.5 px-3 text-right">Line Total (₹)</th>
-                                        <th class="py-2.5 px-3 w-24">Batch / Lot</th>
-                                        <th class="py-2.5 px-3 text-right">Action</th>
+                                        <th class="py-2.5 px-3 w-10 text-center">#</th>
+                                        <th class="py-2.5 px-3 min-w-[260px] w-64">Item (FG / RM) *</th>
+                                        <th class="py-2.5 px-3 min-w-[95px] w-24 text-right">Qty *</th>
+                                        <th class="py-2.5 px-3 min-w-[80px] w-20">Unit</th>
+                                        <th class="py-2.5 px-3 min-w-[95px] w-24 text-right">Sec. Qty</th>
+                                        <th class="py-2.5 px-3 min-w-[80px] w-20">Sec. Unit</th>
+                                        <th class="py-2.5 px-3 min-w-[105px] w-28 text-right">Rate (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[105px] w-28 text-right">Pump Cost (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[80px] w-20 text-right">Disc %</th>
+                                        <th class="py-2.5 px-3 min-w-[105px] w-28 text-right">Disc Amt (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[120px] w-32 text-right">Taxable (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[80px] w-20 text-right">GST %</th>
+                                        <th class="py-2.5 px-3 min-w-[105px] w-28 text-right">GST (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[160px] w-40">Comm Agent</th>
+                                        <th class="py-2.5 px-3 min-w-[80px] w-20 text-right">Comm %</th>
+                                        <th class="py-2.5 px-3 min-w-[105px] w-28 text-right">Comm Amt (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[120px] w-32 text-right">Line Total (₹)</th>
+                                        <th class="py-2.5 px-3 min-w-[120px] w-32">Batch / Lot</th>
+                                        <th class="py-2.5 px-3 w-12 text-center">Action</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-slate-100">
+                                    <tr v-if="form.items.length === 0">
+                                        <td colspan="19" class="py-8 text-center text-slate-400">
+                                            <div class="flex flex-col items-center justify-center gap-2">
+                                                <Boxes class="w-8 h-8 text-slate-300" />
+                                                <span class="text-xs font-semibold text-slate-600">No line items added yet</span>
+                                                <p class="text-[11px] text-slate-400">Click <strong>"Browse Stock Inventory"</strong> or <strong>"Add Item Row"</strong> above to add dispatched items.</p>
+                                                <div class="flex items-center gap-2 pt-1">
+                                                    <button
+                                                        type="button"
+                                                        @click="openStockModal()"
+                                                        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all shadow-xs"
+                                                    >
+                                                        <Boxes class="w-3.5 h-3.5" />
+                                                        <span>Browse Stock Inventory</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        @click="addItemRow"
+                                                        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition-all shadow-xs"
+                                                    >
+                                                        <PlusCircle class="w-3.5 h-3.5" />
+                                                        <span>Add Item Row</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
                                     <tr v-for="(row, idx) in form.items" :key="idx" class="hover:bg-slate-50">
-                                        <td class="py-2.5 px-3 font-mono text-slate-400">{{ idx + 1 }}</td>
+                                        <td class="py-2.5 px-3 font-mono text-slate-400 text-center">{{ idx + 1 }}</td>
 
                                         <!-- Item Selector -->
                                         <td class="py-2.5 px-3">
-                                            <select
-                                                v-model.number="row.item_id"
-                                                required
-                                                @change="onItemChange(idx)"
-                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-semibold text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
-                                            >
-                                                <option v-for="it in outwardStore.items" :key="it.id" :value="it.id">
-                                                    [{{ it.type.toUpperCase() }}] {{ it.category }} {{ it.size ? `(${it.size})` : '' }}
-                                                </option>
-                                            </select>
+                                            <div class="space-y-1">
+                                                <div class="flex items-center gap-1">
+                                                    <select
+                                                        v-model.number="row.item_id"
+                                                        required
+                                                        @change="onItemChange(idx)"
+                                                        class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-semibold text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                    >
+                                                        <option v-for="it in outwardStore.items" :key="it.id" :value="it.id">
+                                                            [{{ it.type.toUpperCase() }}] {{ it.category }} {{ it.size ? `(${it.size})` : '' }}
+                                                        </option>
+                                                    </select>
+                                                    <button
+                                                        type="button"
+                                                        @click="openStockModal(idx)"
+                                                        class="p-1.5 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 transition-colors flex-shrink-0"
+                                                        title="Choose from Available Stock Inventory"
+                                                    >
+                                                        <Boxes class="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                                <!-- Stock balance & warning badge -->
+                                                <div v-if="getItemNetAvailable(row.item_id, idx).item" class="flex items-center gap-1.5 text-[10px]">
+                                                    <span
+                                                        :class="[
+                                                             'px-1.5 py-0.5 rounded font-mono font-semibold',
+                                                             getItemNetAvailable(row.item_id, idx).is_stock_exempt
+                                                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                                                : getItemNetAvailable(row.item_id, idx).primary > 0
+                                                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                                                    : 'bg-red-50 text-red-700 border border-red-200'
+                                                        ]"
+                                                    >
+                                                        {{ getItemNetAvailable(row.item_id, idx).is_stock_exempt ? 'Stock Exempt' : `Avail: ${Number(getItemNetAvailable(row.item_id, idx).primary).toLocaleString()} ${row.unit || 'cum'}` }}
+                                                    </span>
+                                                    <span
+                                                        v-if="!getItemNetAvailable(row.item_id, idx).is_stock_exempt && Number(row.qty) > getItemNetAvailable(row.item_id, idx).primary"
+                                                        class="text-red-600 font-bold flex items-center gap-0.5"
+                                                        title="Dispatch qty exceeds current available stock"
+                                                    >
+                                                        <AlertTriangle class="w-3 h-3" />
+                                                        <span>Low Stock</span>
+                                                    </span>
+                                                </div>
+                                            </div>
                                         </td>
 
                                         <!-- Primary Qty -->
@@ -1266,7 +1560,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 min="0.0001"
                                                 required
                                                 @input="onPrimaryQtyChange(idx)"
-                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono font-bold text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono font-bold text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none"
                                             />
                                         </td>
 
@@ -1290,7 +1584,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 step="any"
                                                 min="0"
                                                 @input="onSecondaryQtyChange(idx)"
-                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono font-bold text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none text-cyan-900"
+                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono font-bold text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none text-cyan-900"
                                             />
                                         </td>
 
@@ -1315,7 +1609,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 min="0"
                                                 placeholder="0.00"
                                                 @input="onFinancialChange(idx)"
-                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none"
                                             />
                                         </td>
 
@@ -1328,7 +1622,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 min="0"
                                                 placeholder="0.00"
                                                 @input="onFinancialChange(idx)"
-                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none text-amber-900"
+                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none text-amber-900"
                                             />
                                         </td>
 
@@ -1342,7 +1636,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 max="100"
                                                 placeholder="0"
                                                 @input="recalculateRow(row, 'disc_pct')"
-                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none"
                                             />
                                         </td>
 
@@ -1355,13 +1649,13 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 min="0"
                                                 placeholder="0.00"
                                                 @input="recalculateRow(row, 'disc_amt')"
-                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none text-red-600"
+                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none text-red-600"
                                             />
                                         </td>
 
                                         <!-- Taxable Amount (Calculated) -->
-                                        <td class="py-2.5 px-3 text-right font-mono font-semibold text-slate-800">
-                                            {{ Number(row.taxable_amount).toFixed(2) }}
+                                        <td class="py-2.5 px-3 text-right font-mono font-semibold text-slate-800 whitespace-nowrap">
+                                            {{ Number(row.taxable_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
                                         </td>
 
                                         <!-- GST % -->
@@ -1374,13 +1668,13 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 max="100"
                                                 placeholder="0"
                                                 @input="onFinancialChange(idx)"
-                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                class="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none"
                                             />
                                         </td>
 
                                         <!-- GST Amount (Calculated) -->
-                                        <td class="py-2.5 px-3 text-right font-mono text-slate-700">
-                                            {{ Number(row.gst_amount).toFixed(2) }}
+                                        <td class="py-2.5 px-3 text-right font-mono text-slate-700 whitespace-nowrap">
+                                            {{ Number(row.gst_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
                                         </td>
 
                                         <!-- Line Item Commission Agent -->
@@ -1406,7 +1700,7 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 min="0"
                                                 placeholder="0"
                                                 @input="recalculateRow(row, 'comm_pct')"
-                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none"
                                             />
                                         </td>
 
@@ -1419,13 +1713,13 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 min="0"
                                                 placeholder="0.00"
                                                 @input="recalculateRow(row, 'comm_amt')"
-                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none text-indigo-700"
+                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-900 font-mono text-xs text-right focus:ring-1 focus:ring-amber-500 focus:outline-none text-indigo-700"
                                             />
                                         </td>
 
                                         <!-- Line Total (Calculated) -->
-                                        <td class="py-2.5 px-3 text-right font-mono font-bold text-emerald-800">
-                                            {{ Number(row.total_amount).toFixed(2) }}
+                                        <td class="py-2.5 px-3 text-right font-mono font-bold text-emerald-800 whitespace-nowrap">
+                                            {{ Number(row.total_amount || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
                                         </td>
 
                                         <!-- Lot / Batch -->
@@ -1434,17 +1728,16 @@ const navigateToPayments = (outward?: StockOutward) => {
                                                 v-model="row.lotno"
                                                 type="text"
                                                 placeholder="Batch #"
-                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-700 text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                                                class="w-full px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-slate-700 font-mono text-xs focus:ring-1 focus:ring-amber-500 focus:outline-none"
                                             />
                                         </td>
 
                                         <!-- Delete row button -->
-                                        <td class="py-2.5 px-3 text-right">
+                                        <td class="py-2.5 px-3 text-center">
                                             <button
                                                 type="button"
                                                 @click="removeItemRow(idx)"
-                                                :disabled="form.items.length <= 1"
-                                                class="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:hover:bg-transparent"
+                                                class="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
                                                 title="Remove Item"
                                             >
                                                 <Trash class="w-3.5 h-3.5" />
@@ -1455,89 +1748,34 @@ const navigateToPayments = (outward?: StockOutward) => {
                                 <tfoot>
                                     <tr class="bg-slate-50 border-t border-slate-200 font-bold text-xs text-slate-800">
                                         <td colspan="2" class="py-2.5 px-3 text-right">Totals:</td>
-                                        <td class="py-2.5 px-3 font-mono text-amber-800">
+                                        <td class="py-2.5 px-3 font-mono text-amber-800 text-right">
                                             {{ Number(totalFormPrimaryQty).toFixed(2) }}
                                         </td>
                                         <td colspan="4"></td>
-                                        <td class="py-2.5 px-3 font-mono text-amber-900">
+                                        <td class="py-2.5 px-3 font-mono text-amber-900 text-right">
                                             {{ Number(formTotalLinePumpCost) > 0 ? `+${Number(formTotalLinePumpCost).toFixed(2)}` : '—' }}
                                         </td>
                                         <td colspan="2" class="py-2.5 px-3 text-right text-red-600 font-mono">
                                             -{{ Number(formTotalLineDiscount).toFixed(2) }}
                                         </td>
-                                        <td class="py-2.5 px-3 text-right font-mono text-slate-900">
+                                        <td class="py-2.5 px-3 text-right font-mono text-slate-900 whitespace-nowrap">
                                             {{ Number(formSubtotal).toFixed(2) }}
                                         </td>
                                         <td></td>
-                                        <td class="py-2.5 px-3 text-right font-mono text-slate-900">
+                                        <td class="py-2.5 px-3 text-right font-mono text-slate-900 whitespace-nowrap">
                                             {{ Number(formTaxTotal).toFixed(2) }}
                                         </td>
                                         <td colspan="2"></td>
-                                        <td class="py-2.5 px-3 text-right font-mono text-indigo-700">
+                                        <td class="py-2.5 px-3 text-right font-mono text-indigo-700 whitespace-nowrap">
                                             {{ Number(formTotalLineCommission).toFixed(2) }}
                                         </td>
-                                        <td class="py-2.5 px-3 text-right font-mono text-emerald-800 text-sm">
+                                        <td class="py-2.5 px-3 text-right font-mono text-emerald-800 text-sm whitespace-nowrap">
                                             {{ Number(formGrandTotal).toFixed(2) }}
                                         </td>
                                         <td colspan="2"></td>
                                     </tr>
                                 </tfoot>
                             </table>
-                        </div>
-                    </div>
-
-                    <!-- Additional Charges, Discounts, Commissions & Remarks -->
-                    <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-700 mb-1">Freight / Pumping Charges (₹)</label>
-                            <input
-                                v-model.number="form.freight_charges"
-                                type="number"
-                                step="any"
-                                min="0"
-                                placeholder="0.00"
-                                class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                            />
-                        </div>
-
-                        <div>
-                            <div class="flex items-center justify-between mb-1">
-                                <label class="text-xs font-semibold text-slate-700">Total Discount (₹)</label>
-                                <span class="text-[10px] text-slate-400 font-mono">Lines: ₹{{ formTotalLineDiscount.toFixed(2) }}</span>
-                            </div>
-                            <input
-                                v-model.number="form.discount_amount"
-                                type="number"
-                                step="any"
-                                min="0"
-                                placeholder="0.00"
-                                class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none text-red-600"
-                            />
-                        </div>
-
-                        <div>
-                            <div class="flex items-center justify-between mb-1">
-                                <label class="text-xs font-semibold text-slate-700">Total Commission (₹)</label>
-                                <span class="text-[10px] text-slate-400 font-mono">Lines: ₹{{ formTotalLineCommission.toFixed(2) }}</span>
-                            </div>
-                            <input
-                                v-model.number="form.commission_amount"
-                                type="number"
-                                step="any"
-                                min="0"
-                                placeholder="0.00"
-                                class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none text-indigo-700"
-                            />
-                        </div>
-
-                        <div>
-                            <label class="block text-xs font-semibold text-slate-700 mb-1">Dispatch Remarks / Notes</label>
-                            <input
-                                v-model="form.remarks"
-                                type="text"
-                                placeholder="Slump test 140mm, pump operator instructions..."
-                                class="w-full px-3.5 py-2 bg-white border border-slate-300 rounded-xl text-slate-900 text-xs focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                            />
                         </div>
                     </div>
 
@@ -1552,13 +1790,13 @@ const navigateToPayments = (outward?: StockOutward) => {
                                 <span class="text-[10px] uppercase font-bold text-slate-500 block">Total GST:</span>
                                 <span class="text-xs font-mono font-bold text-slate-800">{{ formatCurrency(formTaxTotal) }}</span>
                             </div>
-                            <div v-if="Number(form.discount_amount) > 0">
+                            <div v-if="formTotalLineDiscount > 0">
                                 <span class="text-[10px] uppercase font-bold text-slate-500 block">Discount:</span>
-                                <span class="text-xs font-mono font-bold text-red-600">-{{ formatCurrency(form.discount_amount) }}</span>
+                                <span class="text-xs font-mono font-bold text-red-600">-{{ formatCurrency(formTotalLineDiscount) }}</span>
                             </div>
-                            <div v-if="Number(form.commission_amount) > 0">
+                            <div v-if="formTotalLineCommission > 0">
                                 <span class="text-[10px] uppercase font-bold text-slate-500 block">Commission:</span>
-                                <span class="text-xs font-mono font-bold text-indigo-700">{{ formatCurrency(form.commission_amount) }}</span>
+                                <span class="text-xs font-mono font-bold text-indigo-700">{{ formatCurrency(formTotalLineCommission) }}</span>
                             </div>
                             <div class="border-l border-slate-200 pl-4">
                                 <span class="text-[10px] uppercase font-bold text-slate-500 block">Grand Total:</span>
@@ -1819,6 +2057,249 @@ const navigateToPayments = (outward?: StockOutward) => {
                     >
                         <RefreshCw v-if="outwardStore.isLoading" class="w-4 h-4 animate-spin" />
                         <span>Delete Outward</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Available Stock Inventory Modal -->
+        <div
+            v-if="isStockModalOpen"
+            @click.self="closeStockModal"
+            class="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/50 backdrop-blur-xs"
+        >
+            <div class="bg-white border border-slate-200 rounded-2xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+                <!-- Modal Header -->
+                <div class="px-5 py-4 border-b border-slate-200 bg-gradient-to-r from-amber-500/10 via-orange-500/5 to-transparent flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2.5 rounded-xl bg-amber-500 text-white shadow-md shadow-amber-500/20">
+                            <Boxes class="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-slate-900 text-base flex items-center gap-2">
+                                <span>Plant Stock Inventory</span>
+                                <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold">
+                                    {{ inStockCount }} In-Stock
+                                </span>
+                            </h3>
+                            <p class="text-xs text-slate-500">
+                                Real-time available ready-mix concrete grades (FG) & raw materials (RM) for dispatch
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        @click="closeStockModal"
+                        class="p-2 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                    >
+                        <X class="w-5 h-5" />
+                    </button>
+                </div>
+
+                <!-- 3 Filters Toolbar -->
+                <div class="p-4 border-b border-slate-200 bg-slate-50">
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <!-- Filter 1: Item Type -->
+                        <div>
+                            <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                                1. Item Type
+                            </label>
+                            <select
+                                v-model="stockTypeFilter"
+                                @change="onStockTypeFilterChange"
+                                class="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                            >
+                                <option value="all">All Types (FG & RM)</option>
+                                <option value="fg">Finished Goods (FG)</option>
+                                <option value="rm">Raw Materials (RM)</option>
+                            </select>
+                        </div>
+
+                        <!-- Filter 2: Category -->
+                        <div>
+                            <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                                2. Category
+                            </label>
+                            <select
+                                v-model="stockCategoryFilter"
+                                @change="onStockCategoryFilterChange"
+                                class="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                            >
+                                <option value="all">All Categories ({{ stockCategoryOptions.length }})</option>
+                                <option v-for="cat in stockCategoryOptions" :key="cat" :value="cat">
+                                    {{ cat }}
+                                </option>
+                            </select>
+                        </div>
+
+                        <!-- Filter 3: Items -->
+                        <div>
+                            <label class="block text-[11px] font-bold uppercase tracking-wider text-slate-600 mb-1">
+                                3. Specific Item
+                            </label>
+                            <select
+                                v-model="stockItemFilter"
+                                class="w-full px-3 py-2 bg-white border border-slate-300 rounded-xl text-xs font-medium text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                            >
+                                <option value="all">All Items ({{ stockItemOptions.length }})</option>
+                                <option v-for="it in stockItemOptions" :key="it.id" :value="it.id">
+                                    [{{ it.type.toUpperCase() }}] {{ it.category }} {{ it.size ? `(${it.size})` : '' }}
+                                </option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Simple Table View -->
+                <div class="flex-1 overflow-y-auto p-4">
+                    <div v-if="filteredStockItems.length === 0" class="py-12 text-center text-slate-400 space-y-2">
+                        <Boxes class="w-8 h-8 mx-auto text-slate-300" />
+                        <div class="font-bold text-slate-700 text-sm">No Matching Stock Items Found</div>
+                        <p class="text-xs text-slate-400">Try resetting one of the 3 filters above</p>
+                    </div>
+
+                    <div v-else class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                        <table class="w-full text-left text-xs">
+                            <thead>
+                                <tr class="bg-slate-50 text-slate-700 uppercase tracking-wider border-b border-slate-200 font-bold text-[10px]">
+                                    <th class="py-3 px-3.5 w-10">#</th>
+                                    <th class="py-3 px-3.5">Item / Grade Description</th>
+                                    <th class="py-3 px-3.5 w-20">Type</th>
+                                    <th class="py-3 px-3.5 w-36 font-mono">Batch No</th>
+                                    <th class="py-3 px-3.5 w-28 text-right">Avail. Primary</th>
+                                    <th class="py-3 px-3.5 w-28 text-right">Avail. Secondary</th>
+                                    <th class="py-3 px-3.5 w-32 text-center">Unit Factor</th>
+                                    <th class="py-3 px-3.5 w-24 text-center">Status</th>
+                                    <th class="py-3 px-3.5 w-28 text-right">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <tr
+                                    v-for="(item, idx) in filteredStockItems"
+                                    :key="item.id"
+                                    :class="[
+                                        'hover:bg-slate-50/80 transition-colors',
+                                        Number(item.available_primary) <= 0 ? 'bg-slate-50/40 text-slate-400' : ''
+                                    ]"
+                                >
+                                    <td class="py-3 px-3.5 font-mono text-slate-400 text-center">{{ idx + 1 }}</td>
+                                    
+                                    <!-- Item Category & Size/Grade -->
+                                    <td class="py-3 px-3.5">
+                                        <div class="font-bold text-slate-900 text-xs sm:text-sm">
+                                            {{ item.category }}
+                                        </div>
+                                        <div v-if="item.size" class="text-[11px] text-slate-500">
+                                            Grade / Size: <span class="font-semibold text-slate-700">{{ item.size }}</span>
+                                        </div>
+                                    </td>
+
+                                    <!-- Type -->
+                                    <td class="py-3 px-3.5">
+                                        <span
+                                            :class="[
+                                                'px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase',
+                                                item.type === 'fg'
+                                                    ? 'bg-amber-100 text-amber-800'
+                                                    : 'bg-blue-100 text-blue-800'
+                                            ]"
+                                        >
+                                            {{ item.type.toUpperCase() }}
+                                        </span>
+                                    </td>
+
+                                    <!-- Batch No -->
+                                    <td class="py-3 px-3.5 font-mono text-xs">
+                                        <span
+                                            v-if="item.batch_no"
+                                            class="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-800 font-bold"
+                                        >
+                                            {{ item.batch_no }}
+                                        </span>
+                                        <span v-else class="text-slate-400 font-normal">
+                                            —
+                                        </span>
+                                    </td>
+
+                                    <!-- Available Primary -->
+                                    <td class="py-3 px-3.5 text-right font-mono font-bold">
+                                        <span :class="Number(item.available_primary) > 0 ? 'text-emerald-700' : 'text-slate-400'">
+                                            {{ Number(item.available_primary || 0).toLocaleString() }}
+                                        </span>
+                                        <span class="text-[11px] text-slate-500 font-normal ml-1">
+                                            {{ item.primary_unit || (item.type === 'fg' ? 'cum' : 'ton') }}
+                                        </span>
+                                    </td>
+
+                                    <!-- Available Secondary -->
+                                    <td class="py-3 px-3.5 text-right font-mono text-slate-600">
+                                        <span>{{ Number(item.available_secondary || 0).toLocaleString() }}</span>
+                                        <span class="text-[11px] text-slate-400 font-normal ml-1">
+                                            {{ item.secondary_unit || (item.type === 'fg' ? 'cum' : 'kgs') }}
+                                        </span>
+                                    </td>
+
+                                    <!-- Conversion -->
+                                    <td class="py-3 px-3.5 text-center font-mono text-[11px] text-slate-500">
+                                        1 {{ item.primary_unit || (item.type === 'fg' ? 'cum' : 'ton') }} = {{ Number(item.conversion_factor) || 1 }} {{ item.secondary_unit || (item.type === 'fg' ? 'cum' : 'kgs') }}
+                                    </td>
+
+                                    <!-- Status Badge -->
+                                    <td class="py-3 px-3.5 text-center">
+                                        <span
+                                            :class="[
+                                                'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
+                                                Number(item.available_primary) > 0
+                                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                                    : 'bg-red-50 text-red-600 border border-red-200'
+                                            ]"
+                                        >
+                                            {{ Number(item.available_primary) > 0 ? 'In Stock' : 'Nil Stock' }}
+                                        </span>
+                                    </td>
+
+                                    <!-- Select Button -->
+                                    <td class="py-3 px-3.5 text-right">
+                                        <button
+                                            type="button"
+                                            @click="selectStockItem(item)"
+                                            :disabled="Number(item.available_primary || 0) <= 0"
+                                            :class="[
+                                                'px-3 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition-all shadow-xs active:scale-95',
+                                                Number(item.available_primary || 0) > 0
+                                                    ? 'bg-amber-500 hover:bg-amber-600 text-white'
+                                                    : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                            ]"
+                                        >
+                                            <PackageCheck class="w-3.5 h-3.5" />
+                                            <span>{{ targetItemRowIndex !== null ? 'Select' : '+ Add' }}</span>
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div class="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+                    <div class="flex items-center gap-3 text-xs text-slate-500">
+                        <span>Showing {{ filteredStockItems.length }} of {{ validStockItemsList.length }} items</span>
+                        <button
+                            v-if="stockTypeFilter !== 'all' || stockCategoryFilter !== 'all' || stockItemFilter !== 'all'"
+                            type="button"
+                            @click="() => { stockTypeFilter = 'all'; stockCategoryFilter = 'all'; stockItemFilter = 'all'; }"
+                            class="text-amber-600 hover:text-amber-700 font-semibold underline text-xs"
+                        >
+                            Reset Filters
+                        </button>
+                    </div>
+                    <button
+                        type="button"
+                        @click="closeStockModal"
+                        class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-semibold transition-colors"
+                    >
+                        Close
                     </button>
                 </div>
             </div>

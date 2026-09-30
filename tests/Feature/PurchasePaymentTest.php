@@ -247,3 +247,76 @@ test('deleting a payment voucher reverts the invoice payment status', function (
     expect((float) $inward->paid_amount)->toBe(0.00)
         ->and($inward->payment_status)->toBe('unpaid');
 });
+
+test('can toggle lock status on purchase payment and prevent update or deletion when locked', function () {
+    $user = User::factory()->create();
+
+    $supplier = Party::create([
+        'name' => 'Supplier '.uniqid(),
+        'type' => 'supplier',
+        'status' => 'active',
+        'code' => 'SUP-'.rand(1000, 9999),
+    ]);
+
+    $inward = StockInward::create([
+        'inward_no' => 'INW-TEST-LOCK',
+        'inward_date' => '2026-09-28',
+        'supplier_party_id' => $supplier->id,
+        'grand_total' => 10000.00,
+        'paid_amount' => 0.00,
+        'payment_status' => 'unpaid',
+    ]);
+
+    $createRes = $this->actingAs($user)->postJson('/api/v1/purchase-payments', [
+        'payment_no' => 'PAY-TEST-LOCK',
+        'payment_date' => '2026-09-29',
+        'party_id' => $supplier->id,
+        'payment_mode' => 'cash',
+        'amount' => 10000.00,
+        'items' => [
+            [
+                'stock_inward_id' => $inward->id,
+                'paid_amount' => 10000.00,
+            ],
+        ],
+    ]);
+
+    $paymentId = $createRes->json('data.id');
+
+    // 1. Toggle lock -> Lock
+    $lockRes = $this->actingAs($user)->postJson("/api/v1/purchase-payments/{$paymentId}/toggle-lock");
+    $lockRes->assertOk();
+    expect($lockRes->json('data.is_locked'))->toBeTrue()
+        ->and($lockRes->json('data.locked_by.id'))->toBe($user->id);
+
+    // 2. Attempt update while locked -> 422
+    $updateRes = $this->actingAs($user)->putJson("/api/v1/purchase-payments/{$paymentId}", [
+        'payment_no' => 'PAY-TEST-LOCK',
+        'payment_date' => '2026-09-29',
+        'party_id' => $supplier->id,
+        'payment_mode' => 'bank_transfer',
+        'amount' => 10000.00,
+        'items' => [
+            [
+                'stock_inward_id' => $inward->id,
+                'paid_amount' => 10000.00,
+            ],
+        ],
+    ]);
+    $updateRes->assertStatus(422);
+    expect($updateRes->json('message'))->toContain('locked and cannot be modified');
+
+    // 3. Attempt delete while locked -> 422
+    $deleteRes = $this->actingAs($user)->deleteJson("/api/v1/purchase-payments/{$paymentId}");
+    $deleteRes->assertStatus(422);
+    expect($deleteRes->json('message'))->toContain('locked and cannot be deleted');
+
+    // 4. Toggle lock -> Unlock
+    $unlockRes = $this->actingAs($user)->postJson("/api/v1/purchase-payments/{$paymentId}/toggle-lock");
+    $unlockRes->assertOk();
+    expect($unlockRes->json('data.is_locked'))->toBeFalse();
+
+    // 5. Now delete succeeds
+    $deleteRes2 = $this->actingAs($user)->deleteJson("/api/v1/purchase-payments/{$paymentId}");
+    $deleteRes2->assertOk();
+});

@@ -24,6 +24,9 @@ class PurchasePayment extends Model
         'bank_name',
         'amount',
         'remarks',
+        'is_locked',
+        'locked_at',
+        'locked_by',
         'created_by',
         'updated_by',
         'deleted_by',
@@ -32,6 +35,8 @@ class PurchasePayment extends Model
     protected $casts = [
         'payment_date' => 'date:Y-m-d',
         'amount' => 'decimal:2',
+        'is_locked' => 'boolean',
+        'locked_at' => 'datetime',
     ];
 
     protected static function booted(): void
@@ -103,6 +108,14 @@ class PurchasePayment extends Model
     public function updater(): BelongsTo
     {
         return $this->belongsTo(User::class, 'updated_by');
+    }
+
+    /**
+     * User who locked the payment.
+     */
+    public function lockedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'locked_by');
     }
 
     /**

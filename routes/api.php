@@ -2,7 +2,9 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
+use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DispatchReportController;
+use App\Http\Controllers\Api\FinancialReportController;
 use App\Http\Controllers\Api\ItemController;
 use App\Http\Controllers\Api\NavigationController;
 use App\Http\Controllers\Api\OutwardPaymentController;
@@ -24,6 +26,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/auth/me', [AuthController::class, 'me']);
         Route::post('/auth/logout', [AuthController::class, 'logout']);
         Route::get('/navigation', [NavigationController::class, 'index']);
+        Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
 
         // Category Master API
         Route::apiResource('categories', CategoryController::class);
@@ -52,12 +55,14 @@ Route::prefix('v1')->group(function () {
         // Purchase Payments API
         Route::get('/purchase-payments/meta', [PurchasePaymentController::class, 'meta']);
         Route::get('/purchase-payments/pending-invoices/{partyId}', [PurchasePaymentController::class, 'pendingInvoices']);
+        Route::post('/purchase-payments/{id}/toggle-lock', [PurchasePaymentController::class, 'toggleLock']);
         Route::apiResource('purchase-payments', PurchasePaymentController::class);
 
         // Outward Payments API (Customer Receipts)
         Route::get('/outward-payments/meta', [OutwardPaymentController::class, 'meta']);
         Route::get('/outward-payments/all-pending-outwards', [OutwardPaymentController::class, 'allPendingOutwards']);
         Route::get('/outward-payments/pending-invoices/{partyId}', [OutwardPaymentController::class, 'pendingInvoices']);
+        Route::post('/outward-payments/{id}/toggle-lock', [OutwardPaymentController::class, 'toggleLock']);
         Route::apiResource('outward-payments', OutwardPaymentController::class);
 
         // Production API
@@ -73,6 +78,13 @@ Route::prefix('v1')->group(function () {
         // Dispatch & Customer Billing Report API
         Route::get('/reports/dispatch-payment/meta', [DispatchReportController::class, 'meta']);
         Route::get('/reports/dispatch-payment', [DispatchReportController::class, 'index']);
+
+        // Financial Reports API
+        Route::get('/reports/financial/meta', [FinancialReportController::class, 'meta']);
+        Route::get('/reports/financial/customer-outstanding', [FinancialReportController::class, 'customerOutstanding']);
+        Route::get('/reports/financial/supplier-payables', [FinancialReportController::class, 'supplierPayables']);
+        Route::get('/reports/financial/cash-bank-book', [FinancialReportController::class, 'cashBankBook']);
+        Route::get('/reports/financial/party-ledger', [FinancialReportController::class, 'partyLedger']);
     });
 });
 
@@ -82,6 +94,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/navigation', [NavigationController::class, 'index']);
+    Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
     Route::apiResource('categories', CategoryController::class);
     Route::get('/items/meta/types', [ItemController::class, 'meta']);
     Route::apiResource('items', ItemController::class);
@@ -101,11 +114,13 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/purchase-payments/meta', [PurchasePaymentController::class, 'meta']);
     Route::get('/purchase-payments/pending-invoices/{partyId}', [PurchasePaymentController::class, 'pendingInvoices']);
+    Route::post('/purchase-payments/{id}/toggle-lock', [PurchasePaymentController::class, 'toggleLock']);
     Route::apiResource('purchase-payments', PurchasePaymentController::class);
 
     Route::get('/outward-payments/meta', [OutwardPaymentController::class, 'meta']);
     Route::get('/outward-payments/all-pending-outwards', [OutwardPaymentController::class, 'allPendingOutwards']);
     Route::get('/outward-payments/pending-invoices/{partyId}', [OutwardPaymentController::class, 'pendingInvoices']);
+    Route::post('/outward-payments/{id}/toggle-lock', [OutwardPaymentController::class, 'toggleLock']);
     Route::apiResource('outward-payments', OutwardPaymentController::class);
 
     Route::get('/productions/meta', [ProductionController::class, 'meta']);
@@ -118,4 +133,10 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::get('/reports/dispatch-payment/meta', [DispatchReportController::class, 'meta']);
     Route::get('/reports/dispatch-payment', [DispatchReportController::class, 'index']);
+
+    Route::get('/reports/financial/meta', [FinancialReportController::class, 'meta']);
+    Route::get('/reports/financial/customer-outstanding', [FinancialReportController::class, 'customerOutstanding']);
+    Route::get('/reports/financial/supplier-payables', [FinancialReportController::class, 'supplierPayables']);
+    Route::get('/reports/financial/cash-bank-book', [FinancialReportController::class, 'cashBankBook']);
+    Route::get('/reports/financial/party-ledger', [FinancialReportController::class, 'partyLedger']);
 });

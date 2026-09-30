@@ -13,6 +13,11 @@ import ProductionView from '../views/production/ProductionView.vue';
 import OutwardView from '../views/outward/OutwardView.vue';
 import StockReportView from '../views/reports/StockReportView.vue';
 import DispatchPaymentReportView from '../views/reports/DispatchPaymentReportView.vue';
+import FinancialReportsView from '../views/reports/FinancialReportsView.vue';
+import CustomerOutstandingReportView from '../views/reports/CustomerOutstandingReportView.vue';
+import SupplierPayablesReportView from '../views/reports/SupplierPayablesReportView.vue';
+import CashBankBookReportView from '../views/reports/CashBankBookReportView.vue';
+import PartyLedgerReportView from '../views/reports/PartyLedgerReportView.vue';
 
 const routes: Array<RouteRecordRaw> = [
     {
@@ -117,7 +122,7 @@ const routes: Array<RouteRecordRaw> = [
         path: '/reports/dispatch-payment',
         name: 'dispatch-payment-report',
         component: DispatchPaymentReportView,
-        meta: { requiresAuth: true, title: 'Dispatch & Customer Billing Register' },
+        meta: { requiresAuth: true, title: 'Customer Payments' },
     },
     {
         path: '/dispatch-payment-report',
@@ -130,6 +135,52 @@ const routes: Array<RouteRecordRaw> = [
     {
         path: '/reports/sales',
         redirect: '/reports/dispatch-payment',
+    },
+    {
+        path: '/reports/financial',
+        name: 'financial-reports',
+        component: FinancialReportsView,
+        meta: { requiresAuth: true, title: 'Financial Reports' },
+    },
+    {
+        path: '/reports/customer-outstanding',
+        name: 'customer-outstanding-report',
+        component: CustomerOutstandingReportView,
+        meta: { requiresAuth: true, title: 'Customer Outstanding & Ageing' },
+    },
+    {
+        path: '/customer-outstanding-report',
+        redirect: '/reports/customer-outstanding',
+    },
+    {
+        path: '/reports/supplier-payables',
+        name: 'supplier-payables-report',
+        component: SupplierPayablesReportView,
+        meta: { requiresAuth: true, title: 'Supplier Payables' },
+    },
+    {
+        path: '/supplier-payables-report',
+        redirect: '/reports/supplier-payables',
+    },
+    {
+        path: '/reports/cash-bank-book',
+        name: 'cash-bank-book-report',
+        component: CashBankBookReportView,
+        meta: { requiresAuth: true, title: 'Cash & Bank Book' },
+    },
+    {
+        path: '/cash-bank-book',
+        redirect: '/reports/cash-bank-book',
+    },
+    {
+        path: '/reports/party-ledger',
+        name: 'party-ledger-report',
+        component: PartyLedgerReportView,
+        meta: { requiresAuth: true, title: 'Party Ledger Statement' },
+    },
+    {
+        path: '/party-ledger',
+        redirect: '/reports/party-ledger',
     },
     {
         path: '/',

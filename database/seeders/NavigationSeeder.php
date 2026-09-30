@@ -123,10 +123,46 @@ class NavigationSeeder extends Seeder
 
         $itemDispatchReport = NavigationItem::create([
             'category_id' => $catReports->id,
-            'title' => 'Dispatch & Billing Report',
+            'title' => 'Customer Payments',
             'path' => '/reports/dispatch-payment',
             'icon' => 'FileSpreadsheet',
             'order' => 2,
+            'is_active' => true,
+        ]);
+
+        $itemCustomerOutstanding = NavigationItem::create([
+            'category_id' => $catReports->id,
+            'title' => 'Customer Outstanding',
+            'path' => '/reports/customer-outstanding',
+            'icon' => 'Users',
+            'order' => 3,
+            'is_active' => true,
+        ]);
+
+        $itemSupplierPayables = NavigationItem::create([
+            'category_id' => $catReports->id,
+            'title' => 'Supplier Payables',
+            'path' => '/reports/supplier-payables',
+            'icon' => 'Building2',
+            'order' => 4,
+            'is_active' => true,
+        ]);
+
+        $itemCashBankBook = NavigationItem::create([
+            'category_id' => $catReports->id,
+            'title' => 'Cash & Bank Book',
+            'path' => '/reports/cash-bank-book',
+            'icon' => 'Landmark',
+            'order' => 5,
+            'is_active' => true,
+        ]);
+
+        $itemPartyLedger = NavigationItem::create([
+            'category_id' => $catReports->id,
+            'title' => 'Party Ledger Statement',
+            'path' => '/reports/party-ledger',
+            'icon' => 'BookOpen',
+            'order' => 6,
             'is_active' => true,
         ]);
 
@@ -159,6 +195,10 @@ class NavigationSeeder extends Seeder
             $itemOutwardPayments->id,
             $itemStockReport->id,
             $itemDispatchReport->id,
+            $itemCustomerOutstanding->id,
+            $itemSupplierPayables->id,
+            $itemCashBankBook->id,
+            $itemPartyLedger->id,
             $itemMaster->id,
             $itemParties->id,
         ]);

@@ -63,6 +63,12 @@ class StockService
 
             $name = trim($item->category.($item->size ? ' - '.$item->size : ''));
 
+            $latestBatchNo = Production::where('fg_item_id', $itemId)
+                ->whereNotNull('batch_no')
+                ->where('batch_no', '!=', '')
+                ->orderByDesc('id')
+                ->value('batch_no');
+
             return [
                 'item_id' => $item->id,
                 'item_name' => $name,
@@ -72,6 +78,7 @@ class StockService
                 'primary_unit' => $primaryUnit,
                 'secondary_unit' => $secondaryUnit,
                 'conversion_factor' => $conversionFactor,
+                'batch_no' => $latestBatchNo ?: '',
                 'total_inward_primary' => round($totalProducedPrimary, 4),
                 'total_inward_secondary' => round($totalProducedSecondary, 4),
                 'total_consumed_primary' => 0.0,
@@ -99,6 +106,14 @@ class StockService
 
         $name = trim($item->category.($item->size ? ' - '.$item->size : ''));
 
+        $latestInwardItem = StockInwardItem::where('item_id', $itemId)
+            ->whereHas('stockInward')
+            ->with('stockInward')
+            ->orderByDesc('id')
+            ->first();
+        $latestBatchNo = $latestInwardItem?->stockInward?->challan_no
+            ?: ($latestInwardItem?->stockInward?->inward_no ?: '');
+
         return [
             'item_id' => $item->id,
             'item_name' => $name,
@@ -108,6 +123,7 @@ class StockService
             'primary_unit' => $primaryUnit,
             'secondary_unit' => $secondaryUnit,
             'conversion_factor' => $conversionFactor,
+            'batch_no' => $latestBatchNo ?: '',
             'total_inward_primary' => round($totalInwardPrimary, 4),
             'total_inward_secondary' => round($totalInwardSecondary, 4),
             'total_consumed_primary' => round($totalConsumedPrimary, 4),
@@ -138,6 +154,79 @@ class StockService
     public function isStockCheckExempt(string $category): bool
     {
         return strcasecmp(trim($category), 'water') === 0;
+    }
+
+    /**
+     * Get available stock quantity for a specific item and optional batch/lot number.
+     * Optionally excludes an outward consignment (used during edit/update to avoid self-counting).
+     */
+    public function getAvailableStockForBatch(int $itemId, ?string $batchNo = null, ?int $excludeOutwardId = null): float
+    {
+        $item = Item::find($itemId);
+        if (! $item) {
+            return 0.0;
+        }
+
+        if ($this->isStockCheckExempt($item->category)) {
+            return 999999999.0;
+        }
+
+        $conversionFactor = (float) $item->conversion_factor ?: 1.0;
+        $batchNo = trim($batchNo ?? '');
+
+        if ($item->type === 'fg') {
+            $prodQuery = Production::where('fg_item_id', $itemId);
+            if ($batchNo !== '') {
+                $prodQuery->where('batch_no', $batchNo);
+            }
+            $totalProducedPrimary = (float) $prodQuery->sum('cbm');
+
+            // Dispatched in other outwards
+            $outQuery = StockOutwardItem::where('item_id', $itemId)
+                ->whereHas('stockOutward');
+            if ($excludeOutwardId) {
+                $outQuery->where('stock_outward_id', '!=', $excludeOutwardId);
+            }
+            if ($batchNo !== '') {
+                $outQuery->where('lotno', $batchNo);
+            }
+            $totalDispatchedPrimary = (float) $outQuery->sum('qty');
+
+            return max(0.0, round($totalProducedPrimary - $totalDispatchedPrimary, 4));
+        }
+
+        // For RM item
+        $inwQuery = StockInwardItem::where('item_id', $itemId)
+            ->whereHas('stockInward');
+        if ($batchNo !== '') {
+            $inwQuery->where(function ($q) use ($batchNo) {
+                $q->where('lot_no', $batchNo)
+                    ->orWhereHas('stockInward', fn ($sq) => $sq->where('challan_no', $batchNo)->orWhere('inward_no', $batchNo));
+            });
+        }
+        $totalInwardPrimary = (float) $inwQuery->sum('qty_primary');
+
+        // Total consumed via Production
+        $totalConsumedSecondary = (float) ProductionConsumption::where('item_id', $itemId)
+            ->whereHas('production')
+            ->sum('consumed_qty');
+        $totalConsumedPrimary = $conversionFactor > 0 ? ($totalConsumedSecondary / $conversionFactor) : $totalConsumedSecondary;
+
+        $outQuery = StockOutwardItem::where('item_id', $itemId)
+            ->whereHas('stockOutward');
+        if ($excludeOutwardId) {
+            $outQuery->where('stock_outward_id', '!=', $excludeOutwardId);
+        }
+        if ($batchNo !== '') {
+            $outQuery->where('lotno', $batchNo);
+        }
+        $totalOutwardPrimary = (float) $outQuery->sum('qty');
+
+        if ($batchNo !== '') {
+            return max(0.0, round($totalInwardPrimary - $totalOutwardPrimary, 4));
+        }
+
+        return max(0.0, round($totalInwardPrimary - $totalConsumedPrimary - $totalOutwardPrimary, 4));
     }
 
     /**

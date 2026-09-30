@@ -180,6 +180,23 @@ export const usePurchasePaymentStore = defineStore('purchasePayment', () => {
         }
     };
 
+    const toggleLock = async (id: number): Promise<boolean> => {
+        isSaving.value = true;
+        clearMessages();
+
+        try {
+            const res = await api.post(`/purchase-payments/${id}/toggle-lock`);
+            successMessage.value = res.data.message || 'Payment lock status updated.';
+            await fetchPayments(meta.value.current_page);
+            return true;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Failed to update payment lock status.';
+            return false;
+        } finally {
+            isSaving.value = false;
+        }
+    };
+
     return {
         payments,
         nextPaymentNo,
@@ -205,5 +222,6 @@ export const usePurchasePaymentStore = defineStore('purchasePayment', () => {
         createPayment,
         updatePayment,
         deletePayment,
+        toggleLock,
     };
 });

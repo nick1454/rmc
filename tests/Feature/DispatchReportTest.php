@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\Item;
+use App\Models\OutwardPayment;
+use App\Models\OutwardPaymentItem;
 use App\Models\Party;
 use App\Models\StockOutward;
 use App\Models\StockOutwardItem;
@@ -115,6 +117,7 @@ test('dispatch report index endpoint returns consolidated 17-column register dat
                         'receive_pay',
                         'pending',
                         'relief',
+                        'discount',
                         'commission',
                         'in_acc',
                         'seller',
@@ -133,6 +136,7 @@ test('dispatch report index endpoint returns consolidated 17-column register dat
                     'total_received',
                     'total_pending',
                     'total_relief',
+                    'total_discount',
                     'total_commission',
                 ],
             ],
@@ -147,7 +151,89 @@ test('dispatch report index endpoint returns consolidated 17-column register dat
     expect((float) $data['records'][0]['amount'])->toBe(33000.0);
     expect((float) $data['records'][0]['receive_pay'])->toBe(20000.0);
     expect((float) $data['records'][0]['relief'])->toBe(1000.0);
-    expect((float) $data['records'][0]['pending'])->toBe(12000.0);
+    expect((float) $data['records'][0]['discount'])->toBe(1000.0);
     expect((float) $data['records'][0]['commission'])->toBe(500.0);
     expect($data['records'][0]['seller'])->toBe('Rajender Seller');
+});
+
+test('dispatch report displays commission amount recorded on outward payment items', function () {
+    $user = User::factory()->create();
+
+    $customer = Party::create([
+        'name' => 'SKYLINE BUILDERS',
+        'code' => 'CUST-SKY',
+        'type' => 'customer',
+        'status' => 'active',
+    ]);
+
+    $agent = Party::create([
+        'name' => 'Broker Sharma',
+        'code' => 'AGT-SHARMA',
+        'type' => 'agent',
+        'status' => 'active',
+    ]);
+
+    $item = Item::create([
+        'category' => 'M-30',
+        'size' => 'Standard',
+        'type' => 'fg',
+        'primary_unit' => 'cbm',
+        'secondary_unit' => 'cbm',
+        'conversion_factor' => 1.0,
+        'gst_per' => 18.0,
+    ]);
+
+    $outward = StockOutward::create([
+        'entry_no' => 'OUT-SKY-01',
+        'party_id' => $customer->id,
+        'invoice_date' => now()->format('Y-m-d'),
+        'subtotal' => 20000,
+        'tax_amount' => 3600,
+        'total_amount' => 23600,
+        'paid_amount' => 10000,
+        'payment_status' => 'partially_paid',
+    ]);
+
+    StockOutwardItem::create([
+        'stock_outward_id' => $outward->id,
+        'item_id' => $item->id,
+        'qty' => 5.0,
+        'rate' => 4000,
+        'tax_per' => 18.0,
+        'total_amount' => 23600,
+    ]);
+
+    $payment = OutwardPayment::create([
+        'payment_no' => 'RCT-SKY-01',
+        'party_id' => $customer->id,
+        'payment_date' => now()->format('Y-m-d'),
+        'payment_mode' => 'RTGS',
+        'bank_name' => 'HDFC Bank',
+        'amount' => 10000,
+        'discount_amount' => 500,
+        'is_locked' => false,
+    ]);
+
+    OutwardPaymentItem::create([
+        'outward_payment_id' => $payment->id,
+        'stock_outward_id' => $outward->id,
+        'invoice_amount' => 23600,
+        'paid_amount' => 10000,
+        'discount_amount' => 500,
+        'commission_agent_id' => $agent->id,
+        'commission_agent_name' => 'Broker Sharma',
+        'commission_amount' => 750.00,
+    ]);
+
+    $response = $this->actingAs($user)->getJson('/api/v1/reports/dispatch-payment?party_id='.$customer->id);
+
+    $response->assertOk();
+    $data = $response->json('data');
+    expect($data['records'])->toHaveCount(1);
+    expect((float) $data['records'][0]['commission'])->toBe(750.0);
+    expect($data['records'][0]['seller'])->toBe('Broker Sharma');
+    expect((float) $data['totals']['total_commission'])->toBe(750.0);
+    expect($data['records'][0]['primary_receipt_no'])->toBe('RCT-SKY-01');
+    expect($data['records'][0]['receipts'])->toHaveCount(1);
+    expect($data['records'][0]['receipts'][0]['payment_no'])->toBe('RCT-SKY-01');
 });

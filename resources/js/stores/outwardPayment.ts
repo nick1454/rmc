@@ -211,6 +211,23 @@ export const useOutwardPaymentStore = defineStore('outwardPayment', () => {
         }
     };
 
+    const toggleLock = async (id: number): Promise<boolean> => {
+        isSaving.value = true;
+        clearMessages();
+
+        try {
+            const res = await api.post(`/outward-payments/${id}/toggle-lock`);
+            successMessage.value = res.data.message || 'Receipt lock status updated.';
+            await fetchPayments(meta.value.current_page);
+            return true;
+        } catch (err: any) {
+            error.value = err.response?.data?.message || 'Failed to update receipt lock status.';
+            return false;
+        } finally {
+            isSaving.value = false;
+        }
+    };
+
     const resetFilters = () => {
         searchQuery.value = '';
         customerFilter.value = 'all';
@@ -255,6 +272,7 @@ export const useOutwardPaymentStore = defineStore('outwardPayment', () => {
         createPayment,
         updatePayment,
         deletePayment,
+        toggleLock,
         resetFilters,
     };
 });

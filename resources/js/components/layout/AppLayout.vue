@@ -104,11 +104,7 @@ const isActive = (path: string) => {
         <!-- Mobile Header Bar -->
         <header class="md:hidden flex items-center justify-between px-3.5 py-2.5 bg-white border-b border-slate-200 sticky top-0 z-40">
             <div class="flex items-center gap-2">
-                <RmcLogo size="sm" variant="icon" theme="light" />
-                <div class="truncate max-w-[170px]">
-                    <div class="text-xs font-bold text-slate-900 truncate">{{ title }}</div>
-                    <div v-if="subtitle" class="text-[10px] text-slate-500 truncate">{{ subtitle }}</div>
-                </div>
+                <RmcLogo size="sm" variant="full" theme="light" />
             </div>
 
             <div class="flex items-center gap-1.5">
@@ -363,7 +359,7 @@ const isActive = (path: string) => {
         <!-- Main Workspace View Area -->
         <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
             <!-- Desktop Header Bar -->
-            <header class="h-16 bg-white/90 border-b border-slate-200 px-4 sm:px-6 hidden md:flex items-center justify-between sticky top-0 z-30 backdrop-blur-md">
+            <header class="h-14 bg-white/90 border-b border-slate-200 px-4 sm:px-6 hidden md:flex items-center justify-between sticky top-0 z-30 backdrop-blur-md">
                 <div class="flex items-center gap-3">
                     <!-- Modern Desktop Sidebar Toggle Button -->
                     <button
@@ -376,11 +372,6 @@ const isActive = (path: string) => {
                         <PanelLeftOpen v-if="isSidebarCollapsed" class="w-4 h-4 text-amber-600" />
                         <PanelLeftClose v-else class="w-4 h-4" />
                     </button>
-
-                    <div>
-                        <h1 class="text-lg font-bold text-slate-900 tracking-tight">{{ title }}</h1>
-                        <p v-if="subtitle" class="text-xs text-slate-500">{{ subtitle }}</p>
-                    </div>
                 </div>
 
                 <div class="flex items-center gap-3">
@@ -402,7 +393,13 @@ const isActive = (path: string) => {
             </header>
 
             <!-- Main Content Area Slot -->
-            <main class="flex-1 overflow-y-auto p-3 sm:p-6 md:p-8">
+            <main class="flex-1 overflow-y-auto p-3 sm:p-5 md:p-6 space-y-3">
+                <!-- Page Heading & Subtitle in Page Body -->
+                <div v-if="title" class="space-y-0.5 print:hidden">
+                    <h1 class="text-sm font-bold text-slate-900 tracking-tight">{{ title }}</h1>
+                    <p v-if="subtitle" class="text-[11px] text-slate-500 leading-normal">{{ subtitle }}</p>
+                </div>
+
                 <slot />
             </main>
         </div>

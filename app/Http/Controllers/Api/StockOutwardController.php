@@ -8,12 +8,17 @@ use App\Models\Party;
 use App\Models\StockOutward;
 use App\Models\StockOutwardItem;
 use App\Models\User;
+use App\Services\StockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class StockOutwardController extends Controller
 {
+    public function __construct(
+        protected StockService $stockService
+    ) {}
+
     /**
      * Display a paginated listing of the stock outwards (dispatches).
      */
@@ -92,11 +97,34 @@ class StockOutwardController extends Controller
         $customers = $parties->filter(fn ($p) => in_array($p->type, ['customer', 'both', 'vendor', 'supplier']))->values();
         $agents = $parties->filter(fn ($p) => in_array($p->type, ['agent', 'broker', 'other', 'both']))->values();
 
-        // All items (RM and FG)
+        // All items (RM and FG) with live stock balances
         $items = Item::orderBy('type')
             ->orderBy('category')
             ->orderBy('size')
-            ->get(['id', 'type', 'category', 'size', 'hsn', 'primary_unit', 'secondary_unit', 'conversion_factor', 'gst_per']);
+            ->get(['id', 'type', 'category', 'size', 'hsn', 'primary_unit', 'secondary_unit', 'conversion_factor', 'gst_per'])
+            ->map(function ($item) {
+                $stock = $this->stockService->getItemStock($item->id);
+                $isExempt = $this->stockService->isStockCheckExempt($item->category);
+                $availablePrimary = (float) ($stock['available_primary'] ?? 0);
+                $availableSecondary = (float) ($stock['available_secondary'] ?? 0);
+
+                return [
+                    'id' => $item->id,
+                    'type' => $item->type,
+                    'category' => $item->category,
+                    'size' => $item->size,
+                    'hsn' => $item->hsn,
+                    'primary_unit' => $item->primary_unit,
+                    'secondary_unit' => $item->secondary_unit,
+                    'conversion_factor' => (float) $item->conversion_factor,
+                    'gst_per' => (float) $item->gst_per,
+                    'batch_no' => $stock['batch_no'] ?? '',
+                    'available_primary' => round($availablePrimary, 4),
+                    'available_secondary' => round($availableSecondary, 4),
+                    'is_stock_exempt' => $isExempt,
+                    'in_stock' => $availablePrimary > 0 || $isExempt,
+                ];
+            });
 
         $users = User::select('id', 'name')->orderBy('name')->get();
 
@@ -165,6 +193,32 @@ class StockOutwardController extends Controller
         if (! empty($validated['agent_id']) && empty($validated['agent_name'])) {
             $agent = Party::find($validated['agent_id']);
             $validated['agent_name'] = $agent?->name;
+        }
+
+        // Validate stock availability for each item and batch
+        $itemBatchTotals = [];
+        foreach ($validated['items'] as $itemRow) {
+            $itemId = (int) $itemRow['item_id'];
+            $batchNo = trim($itemRow['lotno'] ?? '');
+            $key = "{$itemId}___{$batchNo}";
+            $itemBatchTotals[$key] = ($itemBatchTotals[$key] ?? 0.0) + (float) $itemRow['qty'];
+        }
+
+        foreach ($itemBatchTotals as $key => $totalQty) {
+            [$itemId, $batchNo] = explode('___', $key);
+            $item = Item::find($itemId);
+            if (! $item || $this->stockService->isStockCheckExempt($item->category)) {
+                continue;
+            }
+
+            $availableStock = $this->stockService->getAvailableStockForBatch((int) $itemId, $batchNo ?: null);
+            if ($totalQty > $availableStock) {
+                $batchStr = $batchNo !== '' ? " (Batch: {$batchNo})" : '';
+
+                return response()->json([
+                    'message' => "Dispatch quantity ({$totalQty} {$item->primary_unit}) for item '{$item->category}'{$batchStr} exceeds available stock of {$availableStock} {$item->primary_unit}.",
+                ], 422);
+            }
         }
 
         $outward = DB::transaction(function () use ($validated) {
@@ -364,6 +418,61 @@ class StockOutwardController extends Controller
             $validated['agent_name'] = $agent?->name;
         }
 
+        // 1. Payment restriction: if payment (full or partial) is recorded, items cannot have quantity reduced below paid quantity
+        $totalPaid = (float) $outward->paid_amount + (float) $outward->payment_discount_amount;
+        $hasPayments = $totalPaid > 0
+            || in_array($outward->payment_status, ['paid', 'partially_paid'])
+            || $outward->paymentItems()->whereHas('payment', fn ($q) => $q->whereNull('deleted_at'))->exists();
+
+        if ($hasPayments && $totalPaid > 0) {
+            $origTotal = (float) $outward->total_amount;
+            $paidRatio = $origTotal > 0 ? min(1.0, $totalPaid / $origTotal) : 1.0;
+
+            $newItemsGrouped = [];
+            foreach ($validated['items'] as $itemRow) {
+                $newItemsGrouped[(int) $itemRow['item_id']] = ($newItemsGrouped[(int) $itemRow['item_id']] ?? 0.0) + (float) $itemRow['qty'];
+            }
+
+            foreach ($outward->items as $origItem) {
+                $minPaidQty = round((float) $origItem->qty * $paidRatio, 4);
+                $newQty = $newItemsGrouped[$origItem->item_id] ?? 0.0;
+
+                if ($newQty < ($minPaidQty - 0.0001)) {
+                    $itemCategory = $origItem->item?->category ?? 'Item';
+
+                    return response()->json([
+                        'message' => "Quantity for '{$itemCategory}' cannot be reduced below the paid quantity of {$minPaidQty} {$origItem->unit} because payment of ₹".number_format($totalPaid, 2).' has already been recorded against this consignment.',
+                    ], 422);
+                }
+            }
+        }
+
+        // 2. Stock batch availability check (excluding current outward to avoid self-conflict)
+        $itemBatchTotals = [];
+        foreach ($validated['items'] as $itemRow) {
+            $itemId = (int) $itemRow['item_id'];
+            $batchNo = trim($itemRow['lotno'] ?? '');
+            $key = "{$itemId}___{$batchNo}";
+            $itemBatchTotals[$key] = ($itemBatchTotals[$key] ?? 0.0) + (float) $itemRow['qty'];
+        }
+
+        foreach ($itemBatchTotals as $key => $totalQty) {
+            [$itemId, $batchNo] = explode('___', $key);
+            $item = Item::find($itemId);
+            if (! $item || $this->stockService->isStockCheckExempt($item->category)) {
+                continue;
+            }
+
+            $availableStock = $this->stockService->getAvailableStockForBatch((int) $itemId, $batchNo ?: null, $outward->id);
+            if ($totalQty > $availableStock) {
+                $batchStr = $batchNo !== '' ? " (Batch: {$batchNo})" : '';
+
+                return response()->json([
+                    'message' => "Dispatch quantity ({$totalQty} {$item->primary_unit}) for item '{$item->category}'{$batchStr} exceeds available stock of {$availableStock} {$item->primary_unit}.",
+                ], 422);
+            }
+        }
+
         DB::transaction(function () use ($outward, $validated) {
             $calculatedSubtotal = 0.0;
             $calculatedTax = 0.0;
@@ -493,6 +602,17 @@ class StockOutwardController extends Controller
      */
     public function destroy(StockOutward $outward): JsonResponse
     {
+        $totalPaid = (float) $outward->paid_amount + (float) $outward->payment_discount_amount;
+        $hasPayments = $totalPaid > 0
+            || in_array($outward->payment_status, ['paid', 'partially_paid'])
+            || $outward->paymentItems()->whereHas('payment', fn ($q) => $q->whereNull('deleted_at'))->exists();
+
+        if ($hasPayments) {
+            return response()->json([
+                'message' => "Cannot delete outward consignment '{$outward->entry_no}' because payment has already been recorded against it.",
+            ], 422);
+        }
+
         DB::transaction(function () use ($outward) {
             $outward->items()->delete();
             $outward->delete();

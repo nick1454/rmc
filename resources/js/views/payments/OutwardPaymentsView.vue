@@ -30,7 +30,9 @@ import {
     Wallet,
     Check,
     ArrowRight,
-    MapPin
+    MapPin,
+    Lock,
+    Unlock
 } from 'lucide-vue-next';
 
 const route = useRoute();
@@ -379,6 +381,10 @@ const handleDelete = async () => {
     }
 };
 
+const handleToggleLock = async (payment: OutwardPayment) => {
+    await paymentStore.toggleLock(payment.id);
+};
+
 const closeAllModals = () => {
     if (isDeleteModalOpen.value) {
         isDeleteModalOpen.value = false;
@@ -593,6 +599,9 @@ const getModeLabel = (mode: string) => {
                                 <span class="font-mono font-bold text-slate-900 text-xs">
                                     {{ payment.payment_no }}
                                 </span>
+                                <span v-if="payment.is_locked" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 font-semibold text-[10px]" title="Receipt Locked">
+                                    <Lock class="w-3 h-3" /> Locked
+                                </span>
                                 <span class="px-2 py-0.5 rounded bg-amber-50 border border-amber-200 text-amber-800 font-bold text-[10px]">
                                     {{ payment.party?.name || payment.party_name }}
                                 </span>
@@ -639,6 +648,21 @@ const getModeLabel = (mode: string) => {
                         <div class="flex items-center justify-end gap-2 pt-1 border-t border-slate-100">
                             <button
                                 type="button"
+                                @click="handleToggleLock(payment)"
+                                :disabled="paymentStore.isSaving"
+                                :class="[
+                                    'p-2 rounded-lg border text-xs cursor-pointer transition-colors',
+                                    payment.is_locked
+                                        ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                                        : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border-slate-200'
+                                ]"
+                                :title="payment.is_locked ? 'Locked - Click to Unlock' : 'Unlocked - Click to Lock'"
+                            >
+                                <Lock v-if="payment.is_locked" class="w-4 h-4" />
+                                <Unlock v-else class="w-4 h-4" />
+                            </button>
+                            <button
+                                type="button"
                                 @click="openViewModal(payment)"
                                 class="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-cyan-700 transition-colors border border-slate-200 cursor-pointer"
                                 title="View Receipt Voucher"
@@ -647,17 +671,29 @@ const getModeLabel = (mode: string) => {
                             </button>
                             <button
                                 type="button"
+                                :disabled="payment.is_locked"
                                 @click="openEditModal(payment)"
-                                class="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-amber-700 transition-colors border border-slate-200 cursor-pointer"
-                                title="Edit Receipt"
+                                :class="[
+                                    'p-2 rounded-lg border transition-colors',
+                                    payment.is_locked
+                                        ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                        : 'bg-slate-100 hover:bg-slate-200 text-amber-700 border-slate-200 cursor-pointer'
+                                ]"
+                                :title="payment.is_locked ? 'Receipt is locked' : 'Edit Receipt'"
                             >
                                 <Edit3 class="w-4 h-4" />
                             </button>
                             <button
                                 type="button"
+                                :disabled="payment.is_locked"
                                 @click="confirmDelete(payment)"
-                                class="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-red-600 transition-colors border border-slate-200 cursor-pointer"
-                                title="Delete Receipt"
+                                :class="[
+                                    'p-2 rounded-lg border transition-colors',
+                                    payment.is_locked
+                                        ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                        : 'bg-slate-100 hover:bg-slate-200 text-red-600 border-slate-200 cursor-pointer'
+                                ]"
+                                :title="payment.is_locked ? 'Receipt is locked' : 'Delete Receipt'"
                             >
                                 <Trash2 class="w-4 h-4" />
                             </button>
@@ -707,8 +743,13 @@ const getModeLabel = (mode: string) => {
                                 :key="payment.id"
                                 class="hover:bg-slate-50 transition-colors"
                             >
-                                <td class="py-3.5 px-4 font-mono font-bold text-slate-900">
-                                    {{ payment.payment_no }}
+                                <td class="py-3.5 px-4">
+                                    <div class="flex items-center gap-1.5">
+                                        <span class="font-mono font-bold text-slate-900">{{ payment.payment_no }}</span>
+                                        <span v-if="payment.is_locked" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-red-50 border border-red-200 text-red-700 font-semibold text-[10px]" title="Receipt Locked">
+                                            <Lock class="w-3 h-3" /> Locked
+                                        </span>
+                                    </div>
                                 </td>
 
                                 <td class="py-3.5 px-4">
@@ -761,6 +802,21 @@ const getModeLabel = (mode: string) => {
                                     <div class="inline-flex items-center gap-1.5">
                                         <button
                                             type="button"
+                                            @click="handleToggleLock(payment)"
+                                            :disabled="paymentStore.isSaving"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border cursor-pointer',
+                                                payment.is_locked
+                                                    ? 'bg-red-50 hover:bg-red-100 text-red-700 border-red-200'
+                                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'
+                                            ]"
+                                            :title="payment.is_locked ? 'Locked - Click to Unlock' : 'Unlocked - Click to Lock'"
+                                        >
+                                            <Lock v-if="payment.is_locked" class="w-3.5 h-3.5" />
+                                            <Unlock v-else class="w-3.5 h-3.5" />
+                                        </button>
+                                        <button
+                                            type="button"
                                             @click="openViewModal(payment)"
                                             class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-cyan-700 transition-colors border border-slate-200 cursor-pointer"
                                             title="View Payment Receipt Voucher"
@@ -769,17 +825,29 @@ const getModeLabel = (mode: string) => {
                                         </button>
                                         <button
                                             type="button"
+                                            :disabled="payment.is_locked"
                                             @click="openEditModal(payment)"
-                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-amber-700 transition-colors border border-slate-200 cursor-pointer"
-                                            title="Edit Payment Receipt"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border',
+                                                payment.is_locked
+                                                    ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                                    : 'bg-slate-100 hover:bg-slate-200 text-amber-700 border-slate-200 cursor-pointer'
+                                            ]"
+                                            :title="payment.is_locked ? 'Receipt is locked and cannot be edited' : 'Edit Payment Receipt'"
                                         >
                                             <Edit3 class="w-3.5 h-3.5" />
                                         </button>
                                         <button
                                             type="button"
+                                            :disabled="payment.is_locked"
                                             @click="confirmDelete(payment)"
-                                            class="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-red-600 transition-colors border border-slate-200 cursor-pointer"
-                                            title="Delete Payment Receipt"
+                                            :class="[
+                                                'p-1.5 rounded-lg transition-colors border',
+                                                payment.is_locked
+                                                    ? 'bg-slate-50 text-slate-400 border-slate-200 opacity-40 cursor-not-allowed'
+                                                    : 'bg-slate-100 hover:bg-slate-200 text-red-600 border-slate-200 cursor-pointer'
+                                            ]"
+                                            :title="payment.is_locked ? 'Receipt is locked and cannot be deleted' : 'Delete Payment Receipt'"
                                         >
                                             <Trash2 class="w-3.5 h-3.5" />
                                         </button>
@@ -1240,7 +1308,7 @@ const getModeLabel = (mode: string) => {
             @click.self="closeViewModal"
             class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs overflow-y-auto"
         >
-            <div class="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden my-8 print:shadow-none print:border-none print:m-0 print:w-full">
+            <div class="bg-white border border-slate-200 rounded-2xl w-full max-w-4xl shadow-2xl overflow-hidden my-8 print:shadow-none print:border-none print:m-0 print:w-full print:max-w-none">
                 <!-- Voucher Header Actions -->
                 <div class="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50 print:hidden">
                     <div class="flex items-center gap-2">
@@ -1272,8 +1340,22 @@ const getModeLabel = (mode: string) => {
                             <p class="text-xs text-slate-500">GSTIN: 27AABCR1234F1Z0 • Phone: +91 98765 43210</p>
                         </div>
                         <div class="text-right">
-                            <div class="inline-block px-3 py-1 bg-amber-100 border border-amber-300 rounded-lg text-amber-900 font-bold text-xs uppercase tracking-wider mb-1">
-                                PAYMENT RECEIPT
+                            <div class="inline-flex items-center gap-1.5 mb-1">
+                                <span class="px-3 py-1 bg-amber-100 border border-amber-300 rounded-lg text-amber-900 font-bold text-xs uppercase tracking-wider">
+                                    PAYMENT RECEIPT
+                                </span>
+                                <span
+                                    :class="[
+                                        'px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border inline-flex items-center gap-1',
+                                        viewingPayment.is_locked
+                                            ? 'bg-red-50 text-red-700 border-red-200'
+                                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    ]"
+                                >
+                                    <Lock v-if="viewingPayment.is_locked" class="w-3 h-3" />
+                                    <Unlock v-else class="w-3 h-3" />
+                                    <span>{{ viewingPayment.is_locked ? 'Locked' : 'Unlocked' }}</span>
+                                </span>
                             </div>
                             <div class="font-mono text-sm font-bold text-slate-900">{{ viewingPayment.payment_no }}</div>
                             <div class="text-xs text-slate-500">Date: {{ formatDate(viewingPayment.payment_date) }}</div>
@@ -1294,8 +1376,14 @@ const getModeLabel = (mode: string) => {
                             <div><span class="font-semibold text-slate-600">Mode:</span> {{ getModeLabel(viewingPayment.payment_mode) }}</div>
                             <div v-if="viewingPayment.reference_no"><span class="font-semibold text-slate-600">Ref / Cheque #:</span> <span class="font-mono font-bold">{{ viewingPayment.reference_no }}</span></div>
                             <div v-if="viewingPayment.bank_name"><span class="font-semibold text-slate-600">Bank:</span> {{ viewingPayment.bank_name }}</div>
-                            <div v-if="viewingPayment.commission_agent?.name || viewingPayment.commission_agent_name">
-                                <span class="font-semibold text-slate-600">Commission Agent:</span> {{ viewingPayment.commission_agent?.name || viewingPayment.commission_agent_name }}
+                            <div v-if="viewingPayment.commission_agent?.name || viewingPayment.commission_agent_name || Number(viewingPayment.commission_amount) > 0">
+                                <span class="font-semibold text-slate-600">Commission:</span>
+                                <span v-if="Number(viewingPayment.commission_amount) > 0" class="font-mono font-bold text-slate-900 ml-1">
+                                    {{ formatCurrency(viewingPayment.commission_amount) }}
+                                </span>
+                                <span v-if="viewingPayment.commission_agent?.name || viewingPayment.commission_agent_name" class="text-slate-600 ml-1">
+                                    ({{ viewingPayment.commission_agent?.name || viewingPayment.commission_agent_name }})
+                                </span>
                             </div>
                             <div v-if="viewingPayment.remarks"><span class="font-semibold text-slate-600">Remarks:</span> {{ viewingPayment.remarks }}</div>
                         </div>
@@ -1318,7 +1406,7 @@ const getModeLabel = (mode: string) => {
                                         <th class="py-2.5 px-3 text-right">Invoice Amount (₹)</th>
                                         <th class="py-2.5 px-3 text-right">Discount (₹)</th>
                                         <th class="py-2.5 px-3 text-right">Amount Received (₹)</th>
-                                        <th class="py-2.5 px-3">Commission</th>
+                                        <th class="py-2.5 px-3 text-right">Commission (₹)</th>
                                         <th class="py-2.5 px-3 text-right">Total Settled (₹)</th>
                                         <th class="py-2.5 px-3">Remarks</th>
                                     </tr>
@@ -1341,11 +1429,14 @@ const getModeLabel = (mode: string) => {
                                         <td class="py-2.5 px-3 text-right font-mono font-bold text-emerald-800">
                                             {{ Number(it.paid_amount || 0).toLocaleString() }}
                                         </td>
-                                        <td class="py-2.5 px-3 text-indigo-700 text-[11px]">
-                                            <span v-if="it.commission_agent?.name || it.commission_agent_name">
-                                                {{ it.commission_agent?.name || it.commission_agent_name }} (₹{{ Number(it.commission_amount || 0).toLocaleString() }})
+                                        <td class="py-2.5 px-3 text-right font-mono font-bold text-indigo-900">
+                                            <span v-if="Number(it.commission_amount) > 0">
+                                                {{ Number(it.commission_amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}
                                             </span>
-                                            <span v-else>—</span>
+                                            <span v-else class="text-slate-400 font-normal">—</span>
+                                            <div v-if="it.commission_agent?.name || it.commission_agent_name" class="text-[10px] text-slate-500 font-sans font-normal truncate max-w-[120px] ml-auto">
+                                                {{ it.commission_agent?.name || it.commission_agent_name }}
+                                            </div>
                                         </td>
                                         <td class="py-2.5 px-3 text-right font-mono font-bold text-slate-900">
                                             {{ (Number(it.paid_amount || 0) + Number(it.discount_amount || 0)).toLocaleString() }}
@@ -1372,7 +1463,7 @@ const getModeLabel = (mode: string) => {
                             </div>
                             <div v-if="Number(viewingPayment.commission_amount) > 0" class="flex justify-between text-slate-600">
                                 <span>Commission Payable:</span>
-                                <span class="font-mono font-semibold text-indigo-700">{{ formatCurrency(viewingPayment.commission_amount) }}</span>
+                                <span class="font-mono font-bold text-indigo-700">{{ formatCurrency(viewingPayment.commission_amount) }}</span>
                             </div>
                             <div class="pt-2 border-t-2 border-slate-800 flex justify-between font-extrabold text-slate-900 text-sm print:border-black">
                                 <span>Total Amount Received:</span>
